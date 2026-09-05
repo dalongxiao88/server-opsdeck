@@ -208,6 +208,7 @@ namespace RDPManager
                     {
                         await newExecutor.ConnectAsync(cancellationToken);
                         RemoteSystemInfo newInfo = await newExecutor.GetSystemInfoAsync(cancellationToken);
+                        newInfo.SudoPassword = info.SudoPassword;
                         session.VerifiedWithNewConnection = true;
                         report(78, "新 SSH 连接验证成功", newInfo.UserName + " 已通过 " + request.NewPort + " 连接");
 
@@ -476,6 +477,8 @@ namespace RDPManager
                         throw new InvalidOperationException("Linux 防火墙处于启用状态；请勾选自动配置防火墙，避免 Web 新端口无法访问");
                     }
 
+                    await EnsureSelinuxPortAsync(executor, info, request.NewPort, session, "http_port_t", cancellationToken);
+
                     report(48, "正在修改 Web 配置", request.Target.DisplayName + " · " + configPath);
                     string tempPath = configPath + ".xiaobai-" + Guid.NewGuid().ToString("N");
                     string command = BuildWebPortChangeCommand(request.Target.ServiceType, serviceName, configPath, tempPath, request.Target.Port, request.NewPort, session.OriginalMode);
@@ -510,6 +513,8 @@ namespace RDPManager
                                 CancellationToken.None), "恢复 Web 配置");
                             if (session.FirewallRuleCreated)
                                 await RemoveFirewallRuleAsync(executor, rollbackInfo, session, CancellationToken.None);
+                            if (session.SelinuxRuleCreated)
+                                await RemoveSelinuxPortAsync(executor, rollbackInfo, session.NewPort, session.SelinuxPortType, CancellationToken.None);
                         }
                         catch (Exception rollbackError)
                         {
@@ -633,7 +638,7 @@ namespace RDPManager
         private static async Task<LinuxSshTarget> DetectSshTargetAsync(IRemoteExecutor executor, RemoteSystemInfo info, CancellationToken cancellationToken)
         {
             const string command =
-                "config=/etc/ssh/sshd_config; [ -f \"$config\" ] || config=/etc/sshd_config; " +
+                "config=/etc/ssh/sshd_config; [ -f \"$config\" ] || config=/etc/sshd_config; [ -f \"$config\" ] || { printf '未找到 sshd_config\\n' >&2; exit 20; }; " +
                 "service=sshd; systemctl cat sshd.service >/dev/null 2>&1 || service=ssh; " +
                 "sshd_bin=$(command -v sshd 2>/dev/null || printf /usr/sbin/sshd); port=$(\"$sshd_bin\" -T -f \"$config\" 2>/dev/null | awk '$1==\"port\"{print $2; exit}'); [ -n \"$port\" ] || port=$(printf '%s\\n' \"$SSH_CONNECTION\" | awk '{print $4}'); [ -n \"$port\" ] || port=22; " +
                 "state=$(systemctl is-active \"$service\" 2>/dev/null); [ -n \"$state\" ] || state=unknown; " +
@@ -789,7 +794,7 @@ namespace RDPManager
                 throw new InvalidOperationException("无法确认本次 Linux 防火墙规则的来源 IP，拒绝执行宽泛删除");
             string family = parsedSource.AddressFamily == System.Net.Sockets.AddressFamily.InterNetworkV6 ? "ipv6" : "ipv4";
             string command = session.FirewallBackend == "ufw"
-                ? "ufw delete allow from " + ShellQuote(parsedSource.ToString()) + " to any port " + session.NewPort + " proto tcp >/dev/null || true"
+                ? "ufw --force delete allow from " + ShellQuote(parsedSource.ToString()) + " to any port " + session.NewPort + " proto tcp >/dev/null || true"
                 : "firewall-cmd --permanent --remove-rich-rule=\"rule family='" + family + "' source address='" + parsedSource.ToString() + "' port port='" + session.NewPort + "' protocol='tcp' accept\" >/dev/null && firewall-cmd --reload >/dev/null || true";
             EnsureSuccess(await RunPrivilegedAsync(executor, info, command + "; printf 'XIAOBAI_FIREWALL_REMOVED\\n'", TimeSpan.FromSeconds(30), cancellationToken), "回滚 Linux 防火墙规则");
         }

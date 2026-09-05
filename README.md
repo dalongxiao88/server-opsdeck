@@ -5,6 +5,7 @@
 ## 当前能力
 
 - SSH / RDP 连接管理与实时延迟检测
+- Linux SSH 登录、系统信息、远程重启和 SSH 端口安全迁移
 - 远程重启及重启状态验证
 - SSH、RDP、HTTP/HTTPS 等端口检测与修改
 - MySQL、MariaDB、MongoDB、Redis 的数据库连接、用户权限、备份恢复和迁移
@@ -28,4 +29,3 @@ dotnet build RDPManager.sln -c Release
 - 数据库管理通过 SSH 隧道完成。
 - 当前不提供一键卸载数据库、删除数据库目录或删除数据库数据的功能。
 - Oracle 相关入口暂保留，数据库管理和一键部署尚未实现。
-
