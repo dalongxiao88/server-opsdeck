@@ -1,0 +1,40 @@
+# Build output
+bin/
+obj/
+[Bb]uild/
+[Dd]ebug/
+[Rr]elease/
+publish/
+
+# Local deployment packages and generated binaries
+发布包_*/
+*.exe
+*.dll
+*.pdb
+*.msi
+
+# Local application data and credentials
+servers.xml
+servers.vault
+password.dat
+*.vault
+*.credentials
+*.secret
+
+# Local screenshots and temporary working files
+git/
+work/
+*.tmp
+*.bak
+*.log
+
+# IDE/user-specific files
+.vs/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# NuGet packages
+packages/
+
