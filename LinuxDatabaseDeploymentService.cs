@@ -328,11 +328,11 @@ namespace RDPManager
             if (type == "MySQL")
                 return new LinuxPackage { Family = "mysql", PackageName = "mysql-server", ServiceName = "mysql", ConfigPath = "/etc/mysql/mysql.conf.d/99-xiaobai-manager.cnf", DataPath = "/var/lib/mysql", Major = "8" };
             if (type == "MariaDB")
-                return new LinuxPackage { Family = "mysql", PackageName = "mariadb-server", ServiceName = "mariadb", ConfigPath = "/etc/mysql/mariadb.conf.d/99-xiaobai-manager.cnf", DataPath = "/var/lib/mysql", Major = track != null && track.StartsWith("11", StringComparison.Ordinal) ? "11" : "10" };
+                return new LinuxPackage { Family = "mysql", PackageName = "mariadb-server", ServiceName = "mariadb", ConfigPath = "/etc/mysql/mariadb.conf.d/99-xiaobai-manager.cnf", DataPath = "/var/lib/mysql", Major = "" };
             if (type == "MongoDB")
                 return new LinuxPackage { Family = "mongo", PackageName = "mongodb-org", ServiceName = "mongod", ConfigPath = "/etc/mongod.conf", DataPath = "/var/lib/mongodb", Major = track != null && track.StartsWith("7", StringComparison.Ordinal) ? "7" : "8" };
             if (type == "Redis")
-                return new LinuxPackage { Family = "redis", PackageName = "redis-server", ServiceName = "redis-server", ConfigPath = "/etc/redis/redis.conf", DataPath = "/var/lib/redis", Major = track != null && track.StartsWith("7", StringComparison.Ordinal) ? "7" : "8" };
+                return new LinuxPackage { Family = "redis", PackageName = "redis-server", ServiceName = "redis-server", ConfigPath = "/etc/redis/redis.conf", DataPath = "/var/lib/redis", Major = "" };
             throw new InvalidOperationException("Linux 暂不支持该数据库类型的一键部署");
         }
 

@@ -766,10 +766,10 @@ namespace RDPManager
             {
                 return new List<DatabaseDeploymentOption>
                 {
-                    new DatabaseDeploymentOption { Type = "MariaDB", Description = "Linux apt/dnf 软件源版本，实际小版本以目标发行版软件源为准。", Versions = new[] { "10.x（系统仓库）", "11.x（系统仓库）" }, DefaultServiceName = "mariadb", DefaultPort = 3306, DefaultDatabaseName = "app_database", DefaultAdminUser = "root", IsSupported = true },
+                    new DatabaseDeploymentOption { Type = "MariaDB", Description = "Linux apt/dnf 系统仓库版本，实际版本以目标发行版软件源为准。", Versions = new[] { "系统仓库版本" }, DefaultServiceName = "mariadb", DefaultPort = 3306, DefaultDatabaseName = "app_database", DefaultAdminUser = "root", IsSupported = true },
                     new DatabaseDeploymentOption { Type = "MySQL", Description = "Linux apt/dnf 软件源版本，实际小版本以目标发行版软件源为准。", Versions = new[] { "8.x（系统仓库）" }, DefaultServiceName = "mysql", DefaultPort = 3306, DefaultDatabaseName = "app_database", DefaultAdminUser = "root", IsSupported = true },
                     new DatabaseDeploymentOption { Type = "MongoDB", Description = "需要目标服务器已配置 MongoDB 官方软件源；程序不会使用未知第三方源。", Versions = new[] { "8.x（官方仓库）", "7.x（官方仓库）" }, DefaultServiceName = "mongod", DefaultPort = 27017, DefaultDatabaseName = "app_database", DefaultAdminUser = "manager_admin", IsSupported = true },
-                    new DatabaseDeploymentOption { Type = "Redis", Description = "Linux 系统仓库版本，默认使用 Redis 7.x，并只监听 127.0.0.1。", Versions = new[] { "7.x（系统仓库）" }, DefaultServiceName = "redis-server", DefaultPort = 6379, DefaultDatabaseName = "0", DefaultAdminUser = "manager_admin", IsSupported = true },
+                    new DatabaseDeploymentOption { Type = "Redis", Description = "Linux 系统仓库版本，实际主版本以目标发行版软件源为准，并只监听 127.0.0.1。", Versions = new[] { "系统仓库版本" }, DefaultServiceName = "redis-server", DefaultPort = 6379, DefaultDatabaseName = "0", DefaultAdminUser = "manager_admin", IsSupported = true },
                     new DatabaseDeploymentOption { Type = "Oracle", Description = "Oracle Linux 自动部署涉及安装介质、许可和环境要求，当前只保留入口。", Versions = new[] { "开发中" }, DefaultServiceName = "Oracle", DefaultPort = 1521, DefaultDatabaseName = "", DefaultAdminUser = "", IsSupported = false }
                 };
             }

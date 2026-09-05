@@ -548,9 +548,9 @@ namespace RDPManager
                 string.Equals(detected.ServiceStatus, "inactive", StringComparison.OrdinalIgnoreCase) ||
                 string.Equals(detected.ServiceStatus, "failed", StringComparison.OrdinalIgnoreCase) ||
                 string.Equals(detected.ServiceStatus, "dead", StringComparison.OrdinalIgnoreCase);
-            string serviceName = string.IsNullOrWhiteSpace(detected.DisplayName)
+            string serviceName = server != null && server.Type == ServerType.Linux
                 ? detected.ServiceName
-                : detected.DisplayName;
+                : string.IsNullOrWhiteSpace(detected.DisplayName) ? detected.ServiceName : detected.DisplayName;
             bool verified = !isOracle && server != null && server.DatabaseCredentials != null && server.DatabaseCredentials.Any(credential =>
                 string.Equals(credential.DatabaseType, type, StringComparison.OrdinalIgnoreCase) &&
                 string.Equals(credential.ServiceName, serviceName, StringComparison.OrdinalIgnoreCase) &&
