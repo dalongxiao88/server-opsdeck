@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Drawing;
+using System.IO;
 using System.Linq;
 using System.Security.Cryptography;
 using System.Text;
@@ -54,6 +55,8 @@ namespace RDPManager
         private readonly Func<bool> persistChanges;
         private readonly List<DatabaseDeploymentOption> options;
         private readonly DatabaseDeploymentService deploymentService = new DatabaseDeploymentService();
+        private readonly LinuxDatabaseDeploymentService linuxDeploymentService = new LinuxDatabaseDeploymentService();
+        private readonly bool isLinux;
         private int currentStep;
         private string selectedDatabaseType;
         private Label stepDatabaseLabel;
@@ -87,7 +90,8 @@ namespace RDPManager
             this.server = server;
             this.serverPassword = serverPassword ?? "";
             this.persistChanges = persistChanges;
-            options = CreateOptions();
+            isLinux = server != null && server.Type == ServerType.Linux;
+            options = CreateOptions(server);
             Text = "部署数据库 · " + (server == null ? "服务器" : server.Name);
             ClientSize = new Size(820, 680);
             MinimumSize = new Size(780, 650);
@@ -278,7 +282,7 @@ namespace RDPManager
             DatabaseDeploymentOption option = GetSelectedOption() ?? options.First(item => item.IsSupported);
             Panel surface = CreateSurfacePanel();
             surface.Controls.Add(CreateHeading(option.Type + " 版本与初始化配置", 20, 18));
-            surface.Controls.Add(CreateText("安装包将在目标服务器下载；请确认版本、服务名称和端口。", 22, 49, MutedColor, 700));
+            surface.Controls.Add(CreateText(isLinux ? "软件包将在目标 Linux 服务器通过 apt/dnf 获取；请确认版本、服务名称和端口。" : "安装包将在目标服务器下载；请确认版本、服务名称和端口。", 22, 49, MutedColor, 700));
 
             AddFieldLabel(surface, "版本", 22, 91);
             versionBox = new ComboBox
@@ -296,6 +300,11 @@ namespace RDPManager
 
             AddFieldLabel(surface, "服务名称", 390, 91);
             serviceNameBox = CreateInput(Draft != null && Draft.DatabaseType == option.Type ? Draft.ServiceName : option.DefaultServiceName, 390, 115, 330);
+            if (isLinux)
+            {
+                serviceNameBox.ReadOnly = true;
+                serviceNameBox.BackColor = Color.FromArgb(247, 249, 250);
+            }
             surface.Controls.Add(serviceNameBox);
 
             AddFieldLabel(surface, "监听地址", 22, 163);
@@ -435,7 +444,7 @@ namespace RDPManager
 
         private async Task ProbePortAsync(Button button, bool randomize)
         {
-            if (server == null || string.IsNullOrWhiteSpace(serverPassword))
+            if (server == null || !HasSshCredential())
             {
                 MessageBox.Show("当前没有可用的服务器 SSH 管理凭据。", "无法探测端口", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 return;
@@ -445,12 +454,9 @@ namespace RDPManager
             button.Text = "探测中...";
             try
             {
-                int port = await deploymentService.SuggestAvailablePortAsync(
-                    server,
-                    serverPassword,
-                    (int)portBox.Value,
-                    randomize,
-                    CancellationToken.None);
+                int port = isLinux
+                    ? await linuxDeploymentService.SuggestAvailablePortAsync(server, serverPassword, (int)portBox.Value, randomize, CancellationToken.None)
+                    : await deploymentService.SuggestAvailablePortAsync(server, serverPassword, (int)portBox.Value, randomize, CancellationToken.None);
                 portBox.Value = port;
                 MessageBox.Show(
                     randomize ? "已选择服务器上的可用端口：" + port : "端口 " + port + " 当前可用。",
@@ -471,7 +477,7 @@ namespace RDPManager
 
         private async Task<bool> NormalizePortBeforeConfirmationAsync()
         {
-            if (server == null || string.IsNullOrWhiteSpace(serverPassword))
+            if (server == null || !HasSshCredential())
                 return true;
 
             int requestedPort = (int)portBox.Value;
@@ -482,12 +488,9 @@ namespace RDPManager
             Cursor = Cursors.WaitCursor;
             try
             {
-                int availablePort = await deploymentService.SuggestAvailablePortAsync(
-                    server,
-                    serverPassword,
-                    requestedPort,
-                    false,
-                    CancellationToken.None);
+                int availablePort = isLinux
+                    ? await linuxDeploymentService.SuggestAvailablePortAsync(server, serverPassword, requestedPort, false, CancellationToken.None)
+                    : await deploymentService.SuggestAvailablePortAsync(server, serverPassword, requestedPort, false, CancellationToken.None);
                 if (availablePort != requestedPort)
                 {
                     portBox.Value = availablePort;
@@ -514,7 +517,7 @@ namespace RDPManager
 
         private async Task RunDeploymentAsync()
         {
-            if (server == null || string.IsNullOrWhiteSpace(serverPassword))
+            if (server == null || !HasSshCredential())
             {
                 MessageBox.Show("当前没有可用的服务器 SSH 管理凭据。", "无法部署", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 return;
@@ -541,16 +544,14 @@ namespace RDPManager
             {
                 progress.Operation = async (window, token) =>
                 {
-                    completed = await deploymentService.DeployAsync(
-                        server,
-                        serverPassword,
-                        Draft,
-                        update =>
-                        {
-                            window.SetStep(update.Step, update.State, update.Detail);
-                            window.SetProgress(update.Title, update.Detail, update.Percent, Blue, update.Indeterminate);
-                        },
-                        token);
+                    Action<DatabaseDeploymentProgress> report = update =>
+                    {
+                        window.SetStep(update.Step, update.State, update.Detail);
+                        window.SetProgress(update.Title, update.Detail, update.Percent, Blue, update.Indeterminate);
+                    };
+                    completed = isLinux
+                        ? await linuxDeploymentService.DeployAsync(server, serverPassword, Draft, report, () => PromptSudoPassword(window), token)
+                        : await deploymentService.DeployAsync(server, serverPassword, Draft, report, token);
 
                     window.SetStep(7, OperationStepState.Running, "正在写入加密保险库");
                     window.SetProgress("保存部署凭据", "写入 AES-256-GCM 保险库", 98, Blue, false);
@@ -571,7 +572,10 @@ namespace RDPManager
                         RestorePortRecord(previousPort, completed);
                         try
                         {
-                            await deploymentService.RollbackAsync(server, serverPassword, completed, CancellationToken.None);
+                            if (isLinux)
+                                await linuxDeploymentService.RollbackAsync(server, serverPassword, completed, CancellationToken.None);
+                            else
+                                await deploymentService.RollbackAsync(server, serverPassword, completed, CancellationToken.None);
                         }
                         catch (Exception rollbackError)
                         {
@@ -585,7 +589,10 @@ namespace RDPManager
                     string cleanupDetail = "已清理";
                     try
                     {
-                        await deploymentService.CleanupAsync(server, serverPassword, completed, token);
+                        if (isLinux)
+                            await linuxDeploymentService.CleanupAsync(server, serverPassword, completed, token);
+                        else
+                            await deploymentService.CleanupAsync(server, serverPassword, completed, token);
                         window.SetStep(8, OperationStepState.Completed, cleanupDetail);
                     }
                     catch
@@ -738,8 +745,34 @@ namespace RDPManager
             return builder.ToString();
         }
 
-        private static List<DatabaseDeploymentOption> CreateOptions()
+        private bool HasSshCredential()
         {
+            if (server == null)
+                return false;
+            if (!isLinux || server.SshCredentialMode != SshCredentialMode.PrivateKey)
+                return !string.IsNullOrWhiteSpace(serverPassword);
+            return !string.IsNullOrWhiteSpace(server.SshPrivateKeyPath) && File.Exists(server.SshPrivateKeyPath);
+        }
+
+        private string PromptSudoPassword(IWin32Window owner)
+        {
+            using (PasswordForm form = new PasswordForm("请输入 Linux sudo 密码：" + (server == null ? "服务器" : server.Name)))
+                return form.ShowDialog(owner ?? this) == DialogResult.OK ? form.Password : null;
+        }
+
+        private static List<DatabaseDeploymentOption> CreateOptions(Server server)
+        {
+            if (server != null && server.Type == ServerType.Linux)
+            {
+                return new List<DatabaseDeploymentOption>
+                {
+                    new DatabaseDeploymentOption { Type = "MariaDB", Description = "Linux apt/dnf 软件源版本，实际小版本以目标发行版软件源为准。", Versions = new[] { "10.x（系统仓库）", "11.x（系统仓库）" }, DefaultServiceName = "mariadb", DefaultPort = 3306, DefaultDatabaseName = "app_database", DefaultAdminUser = "root", IsSupported = true },
+                    new DatabaseDeploymentOption { Type = "MySQL", Description = "Linux apt/dnf 软件源版本，实际小版本以目标发行版软件源为准。", Versions = new[] { "8.x（系统仓库）" }, DefaultServiceName = "mysql", DefaultPort = 3306, DefaultDatabaseName = "app_database", DefaultAdminUser = "root", IsSupported = true },
+                    new DatabaseDeploymentOption { Type = "MongoDB", Description = "需要目标服务器已配置 MongoDB 官方软件源；程序不会使用未知第三方源。", Versions = new[] { "8.x（官方仓库）", "7.x（官方仓库）" }, DefaultServiceName = "mongod", DefaultPort = 27017, DefaultDatabaseName = "app_database", DefaultAdminUser = "manager_admin", IsSupported = true },
+                    new DatabaseDeploymentOption { Type = "Redis", Description = "Linux 系统仓库版本，默认使用 Redis 7.x，并只监听 127.0.0.1。", Versions = new[] { "7.x（系统仓库）" }, DefaultServiceName = "redis-server", DefaultPort = 6379, DefaultDatabaseName = "0", DefaultAdminUser = "manager_admin", IsSupported = true },
+                    new DatabaseDeploymentOption { Type = "Oracle", Description = "Oracle Linux 自动部署涉及安装介质、许可和环境要求，当前只保留入口。", Versions = new[] { "开发中" }, DefaultServiceName = "Oracle", DefaultPort = 1521, DefaultDatabaseName = "", DefaultAdminUser = "", IsSupported = false }
+                };
+            }
             return new List<DatabaseDeploymentOption>
             {
                 new DatabaseDeploymentOption { Type = "MariaDB", Description = "官方 Windows 发行版。首期逻辑建议优先实现，用于验证下载、安装、回滚和保险库存储的完整流程。", Versions = new[] { "11.4 LTS（推荐）", "10.11 LTS（兼容）" }, DefaultServiceName = "MariaDB", DefaultPort = 3306, DefaultDatabaseName = "app_database", DefaultAdminUser = "root", IsSupported = true },

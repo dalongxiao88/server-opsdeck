@@ -198,10 +198,10 @@ namespace RDPManager
             flow.Controls.Add(CreateMetricCard("已验证", readyCountLabel, Green));
             flow.Controls.Add(CreateMetricCard("待配置", pendingCountLabel, Orange));
 
-            Button deploy = CreateButton(server != null && server.Type == ServerType.Linux ? "Linux 部署待开发" : "部署数据库", Blue, true, 150);
+            Button deploy = CreateButton("部署数据库", Blue, true, 150);
             deploy.Dock = DockStyle.Fill;
             deploy.Margin = new Padding(0);
-            deploy.Enabled = server == null || server.Type == ServerType.Windows;
+            deploy.Enabled = server != null;
             deploy.Click += async (sender, args) => await OpenDatabaseDeploymentAsync();
 
             TableLayoutPanel layout = new TableLayoutPanel

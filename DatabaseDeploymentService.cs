@@ -34,6 +34,9 @@ namespace RDPManager
         public string InstallPath { get; set; }
         public string DataPath { get; set; }
         public string TemporaryPath { get; set; }
+        public string PackageName { get; set; }
+        public string AdditionalConfigPath { get; set; }
+        public bool PackageInstalledByManager { get; set; }
         public string ServerVersion { get; set; }
         public DatabaseCredentialRecord Credential { get; set; }
     }
