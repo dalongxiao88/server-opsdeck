@@ -378,6 +378,8 @@ namespace RDPManager
                 throw new InvalidOperationException("Linux 数据库部署配置不完整或包含不支持的字符");
             if (draft.DatabaseType == "Oracle")
                 throw new InvalidOperationException("Oracle Linux 一键部署暂未开放");
+            if (draft.DatabaseType == "Redis" && draft.AdminPassword.Any(char.IsWhiteSpace))
+                throw new InvalidOperationException("Redis ACL 密码不能包含空白字符，请使用字母、数字和常用符号");
         }
 
         private static void ValidateServer(Server server)
