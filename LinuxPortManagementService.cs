@@ -40,6 +40,8 @@ namespace RDPManager
                         TargetKey = target.ConfigPath + "|" + target.ServiceName,
                         ServiceStatus = target.ServiceStatus
                     });
+                    if (!target.IsSupported)
+                        result.Warnings.Add("检测到 SSH 子配置包含活动 Port 指令，已禁止自动修改，避免旧端口残留");
                 }
                 else
                 {
@@ -263,8 +265,10 @@ namespace RDPManager
                     else if (session.FirewallRuleCreated)
                     {
                         RemoteSystemInfo cleanupInfo = await oldExecutor.GetSystemInfoAsync(CancellationToken.None);
+                        cleanupInfo.SudoPassword = server.SudoPassword;
                         await RemoveFirewallRuleAsync(oldExecutor, cleanupInfo, session, CancellationToken.None);
                     }
+                    await CleanupOrphanBackupAsync(oldExecutor, session.BackupPath, server.SudoPassword);
                     throw;
                 }
                 finally
@@ -402,6 +406,7 @@ namespace RDPManager
                     {
                         throw new InvalidOperationException("Linux 数据库端口修改失败，且自动回滚未完成：" + rollbackError.Message);
                     }
+                    await CleanupOrphanBackupAsync(executor, session.BackupPath, server.SudoPassword);
                     throw;
                 }
             }
@@ -526,6 +531,7 @@ namespace RDPManager
                         RemoteSystemInfo cleanupInfo = await executor.GetSystemInfoAsync(CancellationToken.None);
                         await RemoveFirewallRuleAsync(executor, cleanupInfo, session, CancellationToken.None);
                     }
+                    await CleanupOrphanBackupAsync(executor, session.BackupPath, server.SudoPassword);
                     throw;
                 }
             }
@@ -635,6 +641,17 @@ namespace RDPManager
             return await privileged.ExecuteSudoCommandAsync(command, info.SudoPassword, timeout, cancellationToken);
         }
 
+        private static async Task CleanupOrphanBackupAsync(IRemoteExecutor executor, string backupPath, string sudoPassword)
+        {
+            try
+            {
+                RemoteSystemInfo info = await executor.GetSystemInfoAsync(CancellationToken.None);
+                info.SudoPassword = sudoPassword;
+                await RunPrivilegedAsync(executor, info, "rm -f " + ShellQuote(backupPath), TimeSpan.FromSeconds(20), CancellationToken.None);
+            }
+            catch { }
+        }
+
         private static async Task<LinuxSshTarget> DetectSshTargetAsync(IRemoteExecutor executor, RemoteSystemInfo info, CancellationToken cancellationToken)
         {
             const string command =
@@ -642,7 +659,8 @@ namespace RDPManager
                 "service=sshd; systemctl cat sshd.service >/dev/null 2>&1 || service=ssh; " +
                 "sshd_bin=$(command -v sshd 2>/dev/null || printf /usr/sbin/sshd); port=$(\"$sshd_bin\" -T -f \"$config\" 2>/dev/null | awk '$1==\"port\"{print $2; exit}'); [ -n \"$port\" ] || port=$(printf '%s\\n' \"$SSH_CONNECTION\" | awk '{print $4}'); [ -n \"$port\" ] || port=22; " +
                 "state=$(systemctl is-active \"$service\" 2>/dev/null); [ -n \"$state\" ] || state=unknown; " +
-                "printf 'XIAOBAI_CONFIG=%s\\nXIAOBAI_SERVICE=%s\\nXIAOBAI_PORT=%s\\nXIAOBAI_STATE=%s\\n' \"$config\" \"$service\" \"$port\" \"$state\"";
+                "include_port=false; for f in /etc/ssh/sshd_config.d/*.conf /etc/sshd_config.d/*.conf; do if [ -f \"$f\" ] && grep -Eiq '^[[:space:]]*[Pp][Oo][Rr][Tt][[:space:]]+[0-9]+' \"$f\"; then include_port=true; fi; done; " +
+                "printf 'XIAOBAI_CONFIG=%s\\nXIAOBAI_SERVICE=%s\\nXIAOBAI_PORT=%s\\nXIAOBAI_STATE=%s\\nXIAOBAI_INCLUDE_PORT=%s\\n' \"$config\" \"$service\" \"$port\" \"$state\" \"$include_port\"";
             RemoteCommandResult result = await executor.ExecuteCommandAsync(command, TimeSpan.FromSeconds(25), cancellationToken);
             EnsureSuccess(result, "识别 Linux SSH 服务");
             Dictionary<string, string> values = ParseFields(result.Output);
@@ -657,7 +675,7 @@ namespace RDPManager
                 ServiceName = serviceName,
                 Port = port,
                 ServiceStatus = GetValue(values, "STATE"),
-                IsSupported = (info != null && info.HasSystemd) && (serviceName == "ssh" || serviceName == "sshd")
+                IsSupported = (info != null && info.HasSystemd) && (serviceName == "ssh" || serviceName == "sshd") && GetValue(values, "INCLUDE_PORT") != "true"
             };
         }
 
