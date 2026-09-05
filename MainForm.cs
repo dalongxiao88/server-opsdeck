@@ -719,10 +719,10 @@ namespace RDPManager
             bool operationIdle = !operationRunning;
             connectButton.Enabled = operationIdle && server != null;
             editButton.Enabled = operationIdle && server != null;
-            restartButton.Enabled = operationIdle && server != null && server.Type == ServerType.Windows;
-            portButton.Enabled = operationIdle && server != null && server.Type == ServerType.Windows;
+            restartButton.Enabled = operationIdle && server != null;
+            portButton.Enabled = operationIdle && server != null;
             moreButton.Enabled = operationIdle && server != null;
-            databaseButton.Enabled = operationIdle && server != null && server.Type == ServerType.Windows;
+            databaseButton.Enabled = operationIdle && server != null;
 
             if (server == null)
             {
@@ -842,6 +842,15 @@ namespace RDPManager
 
         private bool EnsureServerPassword(Server server, ref string password)
         {
+            if (server != null && server.Type == ServerType.Linux && server.SshCredentialMode == SshCredentialMode.PrivateKey)
+            {
+                if (string.IsNullOrWhiteSpace(server.SshPrivateKeyPath) || !File.Exists(server.SshPrivateKeyPath))
+                {
+                    MessageBox.Show("当前 Linux 服务器使用 SSH 私钥，但私钥文件不存在。请编辑服务器重新选择私钥文件。", "私钥不可用", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return false;
+                }
+                return EnsurePrivateKeyReady(server);
+            }
             if (!string.IsNullOrEmpty(password))
                 return true;
 
@@ -861,6 +870,58 @@ namespace RDPManager
             statusBarLabel.Text = storageMode == StorageMode.EncryptedVault
                 ? "服务器密码已保存到加密保险库"
                 : "服务器密码已保存到 servers.xml";
+            return true;
+        }
+
+        private bool EnsurePrivateKeyReady(Server server)
+        {
+            try
+            {
+                using (Renci.SshNet.PrivateKeyFile key = string.IsNullOrEmpty(server.SshPrivateKeyPassphrase)
+                    ? new Renci.SshNet.PrivateKeyFile(server.SshPrivateKeyPath)
+                    : new Renci.SshNet.PrivateKeyFile(server.SshPrivateKeyPath, server.SshPrivateKeyPassphrase))
+                {
+                }
+                return true;
+            }
+            catch (Renci.SshNet.Common.SshPassPhraseNullOrEmptyException)
+            {
+            }
+            catch (Exception ex)
+            {
+                if (string.IsNullOrEmpty(server.SshPrivateKeyPassphrase))
+                {
+                    MessageBox.Show("SSH 私钥无法读取：" + SanitizeError(ex.Message), "私钥不可用", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    return false;
+                }
+            }
+
+            using (PasswordForm form = new PasswordForm("请输入 SSH 私钥口令：" + server.Name))
+            {
+                if (form.ShowDialog(this) != DialogResult.OK)
+                    return false;
+                try
+                {
+                    using (Renci.SshNet.PrivateKeyFile key = new Renci.SshNet.PrivateKeyFile(server.SshPrivateKeyPath, form.Password))
+                    {
+                    }
+                }
+                catch (Exception ex)
+                {
+                    MessageBox.Show("SSH 私钥口令错误或私钥格式不受支持：" + SanitizeError(ex.Message), "私钥验证失败", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    return false;
+                }
+                server.SshPrivateKeyPassphrase = form.Password;
+            }
+
+            if (storageMode == StorageMode.EncryptedVault && !SaveServerData())
+            {
+                server.SshPrivateKeyPassphrase = null;
+                return false;
+            }
+            statusBarLabel.Text = storageMode == StorageMode.EncryptedVault
+                ? "SSH 私钥口令已保存到加密保险库"
+                : "SSH 私钥口令仅在当前会话使用";
             return true;
         }
 
@@ -917,6 +978,9 @@ namespace RDPManager
             try
             {
                 string putty = FindPutty();
+                if (server.SshCredentialMode == SshCredentialMode.PrivateKey &&
+                    !string.Equals(Path.GetExtension(server.SshPrivateKeyPath), ".ppk", StringComparison.OrdinalIgnoreCase))
+                    putty = null;
                 if (!string.IsNullOrEmpty(putty))
                 {
                     ProcessStartInfo start = new ProcessStartInfo(putty) { UseShellExecute = false };
@@ -924,7 +988,12 @@ namespace RDPManager
                     start.ArgumentList.Add(server.Username + "@" + server.IP);
                     start.ArgumentList.Add("-P");
                     start.ArgumentList.Add(server.Port);
-                    if (!string.IsNullOrEmpty(password))
+                    if (server.SshCredentialMode == SshCredentialMode.PrivateKey && !string.IsNullOrWhiteSpace(server.SshPrivateKeyPath))
+                    {
+                        start.ArgumentList.Add("-i");
+                        start.ArgumentList.Add(server.SshPrivateKeyPath);
+                    }
+                    else if (!string.IsNullOrEmpty(password))
                     {
                         start.ArgumentList.Add("-pw");
                         start.ArgumentList.Add(password);
@@ -933,13 +1002,23 @@ namespace RDPManager
                     return;
                 }
 
-                Process.Start(new ProcessStartInfo("cmd.exe", "/K ssh " + server.Username + "@" + server.IP + " -p " + server.Port)
+                ProcessStartInfo nativeSsh = new ProcessStartInfo("cmd.exe") { UseShellExecute = true };
+                nativeSsh.ArgumentList.Add("/K");
+                nativeSsh.ArgumentList.Add("ssh");
+                nativeSsh.ArgumentList.Add("-p");
+                nativeSsh.ArgumentList.Add(server.Port);
+                if (server.SshCredentialMode == SshCredentialMode.PrivateKey && !string.IsNullOrWhiteSpace(server.SshPrivateKeyPath))
                 {
-                    UseShellExecute = true
-                });
-                if (!string.IsNullOrEmpty(password))
+                    nativeSsh.ArgumentList.Add("-i");
+                    nativeSsh.ArgumentList.Add(server.SshPrivateKeyPath);
+                }
+                nativeSsh.ArgumentList.Add(server.Username + "@" + server.IP);
+                Process.Start(nativeSsh);
+                if (server.SshCredentialMode != SshCredentialMode.PrivateKey && !string.IsNullOrEmpty(password))
                     Clipboard.SetText(password);
-                statusBarLabel.Text = "SSH 已启动，服务器密码已复制到剪贴板";
+                statusBarLabel.Text = server.SshCredentialMode == SshCredentialMode.PrivateKey
+                    ? "SSH 已启动，正在使用私钥认证"
+                    : "SSH 已启动，服务器密码已复制到剪贴板";
             }
             catch (Exception ex)
             {
@@ -1119,6 +1198,11 @@ namespace RDPManager
             Server server = GetSelectedServer();
             if (server == null || !EnsureAdminVerified("请输入管理密码以复制服务器密码"))
                 return;
+            if (server.Type == ServerType.Linux && server.SshCredentialMode == SshCredentialMode.PrivateKey)
+            {
+                MessageBox.Show("该 Linux 服务器使用 SSH 私钥认证，没有可复制的服务器登录密码。", "使用私钥认证", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
             Clipboard.SetText(GetServerPassword(server));
             statusBarLabel.Text = "服务器密码已复制到剪贴板";
         }
@@ -1140,11 +1224,6 @@ namespace RDPManager
             Server server = GetSelectedServer();
             if (server == null || operationRunning)
                 return;
-            if (server.Type != ServerType.Windows)
-            {
-                MessageBox.Show("当前首期端口管理只支持 Windows 服务器", "暂不支持", MessageBoxButtons.OK, MessageBoxIcon.Information);
-                return;
-            }
             if (!EnsureAdminVerified("请输入管理密码以管理服务端口"))
                 return;
 
@@ -1159,15 +1238,16 @@ namespace RDPManager
                 using (OperationProgressForm discovery = new OperationProgressForm(
                     "发现远程服务",
                     string.Format("{0}   ·   {1}", server.Name, server.GetMaskedIP()),
-                    new[] { "连接远程管理通道", "识别 RDP / SSH", "识别数据库服务" }))
+                     new[] { "连接远程管理通道", "识别 SSH / RDP", "识别可管理服务" }))
                 {
                     PortInspectionResult captured = null;
                     discovery.Operation = async (window, token) =>
                     {
                         window.SetStep(0, OperationStepState.Running);
-                        window.SetProgress("正在连接服务器", "SSH 优先，失败时回退 WinRM", 10, Blue, true);
-                        PortManagementService service = new PortManagementService();
-                        captured = await service.InspectAsync(server, password, token);
+                        window.SetProgress("正在连接服务器", server.Type == ServerType.Linux ? "通过 SSH 读取 Linux 服务" : "SSH 优先，失败时回退 WinRM", 10, Blue, true);
+                        captured = server.Type == ServerType.Linux
+                            ? await new LinuxPortManagementService().InspectAsync(server, password, token)
+                            : await new PortManagementService().InspectAsync(server, password, token);
                         window.SetStep(0, OperationStepState.Completed, captured.Transport);
                         window.SetStep(1, OperationStepState.Completed, captured.Services.Count(item => item.ServiceType == "RDP" || item.ServiceType == "SSH") + " 项");
                         window.SetStep(2, OperationStepState.Completed, captured.Services.Count(item => item.ServiceType != "RDP" && item.ServiceType != "SSH") + " 项");
@@ -1180,10 +1260,24 @@ namespace RDPManager
                 if (inspection == null)
                     return;
 
+                if (server.Type == ServerType.Linux)
+                {
+                    inspection.Services = inspection.Services
+                        .Where(item => string.Equals(item.ServiceType, "SSH", StringComparison.OrdinalIgnoreCase))
+                        .ToList();
+                    if (inspection.Services.Count == 0)
+                    {
+                        MessageBox.Show("未识别到可安全管理的 Linux SSH 服务。数据库端口修改将在后续 Linux 数据库适配阶段开放。", "没有可管理端口", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                        return;
+                    }
+                }
+
                 using (PortManagementForm settings = new PortManagementForm(
                     server,
                     inspection,
-                    (target, token) => new PortManagementService().GetAvailablePortsAsync(server, password, target, token)))
+                    (target, token) => server.Type == ServerType.Linux
+                        ? new LinuxPortManagementService().GetAvailablePortsAsync(server, password, target, token)
+                        : new PortManagementService().GetAvailablePortsAsync(server, password, target, token)))
                 {
                     if (settings.ShowDialog(this) != DialogResult.OK)
                         return;
@@ -1197,19 +1291,23 @@ namespace RDPManager
                         progress.Operation = async (window, token) =>
                         {
                             int lastProgress = 0;
-                            PortManagementService service = new PortManagementService();
-                            await service.ExecuteAsync(
-                                server,
-                                password,
-                                request,
-                                (value, title, detail) =>
-                                {
-                                    lastProgress = value;
-                                    int step = value < 20 ? 0 : value < 36 ? 1 : value < 55 ? 3 : value < 78 ? 4 : 5;
-                                    window.SetStep(step, OperationStepState.Running, detail);
-                                    window.SetProgress(title, detail, value, value >= 78 ? Orange : Blue, true);
-                                },
-                                token);
+                             Action<int, string, string> report = (value, title, detail) =>
+                             {
+                                 lastProgress = value;
+                                 int step = value < 20 ? 0 : value < 36 ? 1 : value < 55 ? 3 : value < 78 ? 4 : 5;
+                                 window.SetStep(step, OperationStepState.Running, detail);
+                                 window.SetProgress(title, detail, value, value >= 78 ? Orange : Blue, true);
+                             };
+                             if (server.Type == ServerType.Linux)
+                                 await new LinuxPortManagementService().ExecuteAsync(
+                                     server,
+                                     password,
+                                     request,
+                                     report,
+                                     () => PromptLinuxSudoPassword(server, window),
+                                     token);
+                             else
+                                 await new PortManagementService().ExecuteAsync(server, password, request, report, token);
 
                             for (int index = 0; index < 6; index++)
                                 window.SetStep(index, OperationStepState.Completed);
@@ -1218,7 +1316,11 @@ namespace RDPManager
                             if (request.Target.ServiceType == "RDP")
                                 server.Port = request.NewPort.ToString();
                             if (request.Target.ServiceType == "SSH")
+                            {
                                 server.ManagementPort = request.NewPort.ToString();
+                                if (server.Type == ServerType.Linux)
+                                    server.Port = request.NewPort.ToString();
+                            }
                             SaveServerData();
                             window.MarkSuccess(request.Target.DisplayName + " 已切换到端口 " + request.NewPort);
                         };
@@ -1228,6 +1330,8 @@ namespace RDPManager
             }
             finally
             {
+                if (server.Type == ServerType.Linux)
+                    server.SudoPassword = null;
                 operationRunning = false;
                 RefreshGrid();
                 RefreshServerStatusList();
@@ -1240,11 +1344,6 @@ namespace RDPManager
             Server server = GetSelectedServer();
             if (server == null || operationRunning)
                 return;
-            if (server.Type != ServerType.Windows)
-            {
-                MessageBox.Show("当前数据库管理界面首期先支持 Windows 服务器", "暂不支持", MessageBoxButtons.OK, MessageBoxIcon.Information);
-                return;
-            }
             if (storageMode != StorageMode.EncryptedVault)
             {
                 MessageBox.Show(
@@ -1275,14 +1374,15 @@ namespace RDPManager
                     discovery.Operation = async (window, token) =>
                     {
                         window.SetStep(0, OperationStepState.Running);
-                        window.SetProgress("正在连接服务器", "SSH 优先，失败时回退 WinRM", 12, Blue, true);
-                        PortManagementService service = new PortManagementService();
-                        captured = await service.InspectAsync(server, password, token);
+                        window.SetProgress("正在连接服务器", server.Type == ServerType.Linux ? "通过 SSH 读取 Linux 数据库服务" : "SSH 优先，失败时回退 WinRM", 12, Blue, true);
+                        captured = server.Type == ServerType.Linux
+                            ? await new LinuxPortManagementService().InspectAsync(server, password, token)
+                            : await new PortManagementService().InspectAsync(server, password, token);
                         window.SetStep(0, OperationStepState.Completed, captured.Transport);
 
                         int databaseCount = captured.Services.Count(item => IsDatabaseServiceType(item.ServiceType));
                         window.SetStep(1, OperationStepState.Completed, databaseCount + " 项");
-                        window.SetProgress("正在读取数据库状态", "检查 Windows 服务运行状态", 78, Blue, true);
+                        window.SetProgress("正在读取数据库状态", server.Type == ServerType.Linux ? "检查 Linux systemd 服务状态" : "检查 Windows 服务运行状态", 78, Blue, true);
                         window.SetStep(2, OperationStepState.Completed, "状态已更新");
                         window.MarkSuccess("数据库服务检测完成");
                     };
@@ -1302,6 +1402,65 @@ namespace RDPManager
             }
             finally
             {
+                operationRunning = false;
+                UpdateSelectionInfo();
+            }
+        }
+
+        private void OpenLinuxSystemInfo()
+        {
+            Server server = GetSelectedServer();
+            if (server == null || operationRunning)
+                return;
+            if (server.Type != ServerType.Linux)
+            {
+                MessageBox.Show("系统信息窗口当前用于 Linux 服务器。Windows 状态会在后续版本统一展示。", "暂不支持", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+            if (!EnsureAdminVerified("请输入管理密码以读取 Linux 系统信息"))
+                return;
+
+            string password = GetServerPassword(server);
+            if (!EnsureServerPassword(server, ref password))
+                return;
+
+            operationRunning = true;
+            try
+            {
+                RemoteSystemInfo captured = null;
+                using (OperationProgressForm progress = new OperationProgressForm(
+                    "读取 Linux 系统信息",
+                    string.Format("{0}   ·   {1}", server.Name, server.GetMaskedIP()),
+                    new[] { "连接 SSH", "读取系统信息", "确认权限与管理能力" }))
+                {
+                    progress.Operation = async (window, token) =>
+                    {
+                        window.SetStep(0, OperationStepState.Running);
+                        window.SetProgress("正在连接 Linux", "建立 SSH 管理连接", 12, Blue, true);
+                        using (IRemoteExecutor executor = await RemoteExecutorFactory.CreateAsync(server, password, token, RemoteTransport.SSH))
+                        {
+                            window.SetStep(0, OperationStepState.Completed, "SSH 已连接");
+                            window.SetStep(1, OperationStepState.Running);
+                            window.SetProgress("正在读取系统信息", "发行版、内核、资源与服务环境", 48, Blue, true);
+                            captured = await executor.GetSystemInfoAsync(token);
+                            window.SetStep(1, OperationStepState.Completed, captured.OperatingSystem + " " + captured.OsVersion);
+                            window.SetStep(2, OperationStepState.Completed, captured.IsRoot ? "root" : captured.CanSudo ? "免密 sudo" : captured.HasSudo ? "sudo 需密码" : "无 sudo");
+                        }
+                        window.MarkSuccess("Linux 系统信息读取完成");
+                    };
+                    progress.ShowDialog(this);
+                }
+
+                if (captured != null)
+                {
+                    using (LinuxSystemInfoForm form = new LinuxSystemInfoForm(server, captured))
+                        form.ShowDialog(this);
+                }
+            }
+            finally
+            {
+                if (server.Type == ServerType.Linux)
+                    server.SudoPassword = null;
                 operationRunning = false;
                 UpdateSelectionInfo();
             }
@@ -1343,11 +1502,6 @@ namespace RDPManager
             Server server = GetSelectedServer();
             if (server == null || !EnsureAdminVerified("请输入管理密码以执行远程操作"))
                 return;
-            if (server.Type != ServerType.Windows)
-            {
-                MessageBox.Show("远程重启目前只支持 Windows 服务器", "暂不支持", MessageBoxButtons.OK, MessageBoxIcon.Information);
-                return;
-            }
             if (refreshing)
                 return;
 
@@ -1359,8 +1513,8 @@ namespace RDPManager
             try
             {
                 using (OperationProgressForm form = new OperationProgressForm(
-                    "确认重启",
-                    string.Format("{0}   ·   {1}   ·   SSH 优先 / WinRM 备用", server.Name, server.GetMaskedIP()),
+                        "确认重启",
+                        string.Format("{0}   ·   {1}   ·   {2}", server.Name, server.GetMaskedIP(), server.Type == ServerType.Linux ? "Linux / SSH" : "SSH 优先 / WinRM 备用"),
                     new[]
                     {
                         "连接并验证权限",
@@ -1379,6 +1533,8 @@ namespace RDPManager
             }
             finally
             {
+                if (server.Type == ServerType.Linux)
+                    server.SudoPassword = null;
                 operationRunning = false;
             }
             RefreshServerStatusList();
@@ -1411,18 +1567,43 @@ namespace RDPManager
 
                     currentStep = 1;
                     window.SetStep(currentStep, OperationStepState.Running);
-                    window.SetProgress("正在发送重启命令", GetTransportDisplayName(transport, managementPort) + " 已连接，正在核验 shutdown.exe...", 28, Blue, true);
-                    RemoteCommandResult restartResult = await executor.ExecutePowerShellAsync(
-                        "$output = (& shutdown.exe /r /t 5 /f 2>&1 | Out-String).Trim(); " +
-                        "$code = $LASTEXITCODE; " +
-                        "if ($code -ne 0) { throw ('shutdown.exe 返回错误代码 ' + $code + ($(if ($output) { ': ' + $output } else { '' }))) }; " +
-                        "'RESTART_COMMAND_ACCEPTED'",
-                        TimeSpan.FromSeconds(25),
-                        cancellationToken);
+                    RemoteCommandResult restartResult;
+                    if (server.Type == ServerType.Linux)
+                    {
+                        if (!before.IsRoot && !before.CanSudo)
+                        {
+                            if (!before.HasSudo)
+                                throw new InvalidOperationException("当前 Linux 账号不是 root，且系统没有可用的 sudo");
+                            server.SudoPassword = PromptLinuxSudoPassword(server, window);
+                            if (string.IsNullOrEmpty(server.SudoPassword))
+                                throw new InvalidOperationException("未提供 sudo 密码，已停止远程重启");
+                            before.SudoPassword = server.SudoPassword;
+                        }
+                        window.SetProgress("正在发送 Linux 重启命令", GetTransportDisplayName(transport, managementPort) + " 已连接，正在验证管理员权限...", 28, Blue, true);
+                        string rebootCommand = before.HasSystemd ? "systemctl reboot" : "shutdown -r now";
+                        string detached = "nohup sh -c 'sleep 2; " + rebootCommand + "' >/dev/null 2>&1 </dev/null & printf 'RESTART_COMMAND_ACCEPTED\\n'";
+                        if (before.IsRoot)
+                            restartResult = await executor.ExecuteCommandAsync(detached, TimeSpan.FromSeconds(25), cancellationToken);
+                        else if (before.CanSudo)
+                            restartResult = await executor.ExecuteCommandAsync("sudo -n sh -c " + QuoteLinuxShell(detached), TimeSpan.FromSeconds(25), cancellationToken);
+                        else
+                            restartResult = await ((ILinuxPrivilegedExecutor)executor).ExecuteSudoCommandAsync(detached, before.SudoPassword, TimeSpan.FromSeconds(25), cancellationToken);
+                    }
+                    else
+                    {
+                        window.SetProgress("正在发送重启命令", GetTransportDisplayName(transport, managementPort) + " 已连接，正在核验 shutdown.exe...", 28, Blue, true);
+                        restartResult = await executor.ExecutePowerShellAsync(
+                            "$output = (& shutdown.exe /r /t 5 /f 2>&1 | Out-String).Trim(); " +
+                            "$code = $LASTEXITCODE; " +
+                            "if ($code -ne 0) { throw ('shutdown.exe 返回错误代码 ' + $code + ($(if ($output) { ': ' + $output } else { '' }))) }; " +
+                            "'RESTART_COMMAND_ACCEPTED'",
+                            TimeSpan.FromSeconds(25),
+                            cancellationToken);
+                    }
                     if (restartResult.ExitCode != 0 || string.IsNullOrWhiteSpace(restartResult.Output) ||
                         restartResult.Output.IndexOf("RESTART_COMMAND_ACCEPTED", StringComparison.OrdinalIgnoreCase) < 0)
-                        throw new InvalidOperationException("shutdown.exe 未确认接受重启命令：" + SanitizeError(restartResult.Error ?? restartResult.Output));
-                    window.SetStep(currentStep, OperationStepState.Completed, "shutdown.exe 已接受");
+                        throw new InvalidOperationException((server.Type == ServerType.Linux ? "Linux 重启命令" : "shutdown.exe") + " 未确认接受：" + SanitizeError(restartResult.Error ?? restartResult.Output));
+                    window.SetStep(currentStep, OperationStepState.Completed, server.Type == ServerType.Linux ? "重启命令已接受" : "shutdown.exe 已接受");
                 }
 
                 currentStep = 2;
@@ -1557,10 +1738,22 @@ namespace RDPManager
             return RemoteErrorFormatter.Format(message, "");
         }
 
+        private string PromptLinuxSudoPassword(Server server, IWin32Window owner)
+        {
+            using (PasswordForm form = new PasswordForm("请输入 Linux sudo 密码：" + (server == null ? "服务器" : server.Name)))
+                return form.ShowDialog(owner ?? this) == DialogResult.OK ? form.Password : null;
+        }
+
+        private static string QuoteLinuxShell(string value)
+        {
+            return "'" + (value ?? "").Replace("'", "'\\''") + "'";
+        }
+
         private ContextMenuStrip CreateServerContextMenu(bool forButton = false)
         {
             ContextMenuStrip menu = new ContextMenuStrip();
             ToolStripMenuItem connect = new ToolStripMenuItem("连接");
+            ToolStripMenuItem linuxInfo = new ToolStripMenuItem("Linux 系统信息");
             ToolStripMenuItem edit = new ToolStripMenuItem("编辑");
             ToolStripMenuItem copyAddress = new ToolStripMenuItem("复制连接地址");
             ToolStripMenuItem copyPassword = new ToolStripMenuItem("复制密码");
@@ -1571,6 +1764,7 @@ namespace RDPManager
             ToolStripMenuItem delete = new ToolStripMenuItem("删除服务器") { ForeColor = Red };
 
             connect.Click += (sender, args) => ConnectSelectedServer();
+            linuxInfo.Click += (sender, args) => OpenLinuxSystemInfo();
             edit.Click += BtnEdit_Click;
             copyAddress.Click += (sender, args) => CopySelectedEndpoint();
             copyPassword.Click += (sender, args) => CopySelectedPassword();
@@ -1581,6 +1775,7 @@ namespace RDPManager
             delete.Click += (sender, args) => DeleteSelectedServer();
 
             menu.Items.Add(connect);
+            menu.Items.Add(linuxInfo);
             menu.Items.Add(edit);
             menu.Items.Add(new ToolStripSeparator());
             menu.Items.Add(copyAddress);
@@ -1596,6 +1791,8 @@ namespace RDPManager
             {
                 bool enabled = GetSelectedServer() != null;
                 connect.Enabled = enabled;
+                linuxInfo.Visible = enabled && GetSelectedServer().Type == ServerType.Linux;
+                linuxInfo.Enabled = linuxInfo.Visible;
                 edit.Enabled = enabled;
                 copyAddress.Enabled = enabled;
                 copyPassword.Enabled = enabled;

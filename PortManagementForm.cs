@@ -113,7 +113,7 @@ namespace RDPManager
             };
             firewallBox = new CheckBox
             {
-                Text = "自动配置 Windows 防火墙",
+                Text = server != null && server.Type == ServerType.Linux ? "自动配置 Linux 防火墙" : "自动配置 Windows 防火墙",
                 Checked = true,
                 AutoSize = true,
                 Location = new Point(350, 201),

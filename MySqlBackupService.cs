@@ -130,22 +130,29 @@ namespace RDPManager
                 throw new InvalidOperationException("备份文件目录无效");
             Directory.CreateDirectory(outputDirectory);
             string rawPath = outputPath + ".partial-" + Guid.NewGuid().ToString("N") + ".sql";
-            string remoteOptionPath = "C:\\Windows\\Temp\\xiaobai-mysql-" + Guid.NewGuid().ToString("N") + ".cnf";
-            string remoteDumpPath = "C:\\Windows\\Temp\\xiaobai-mysql-" + Guid.NewGuid().ToString("N") + ".sql";
-            string remoteOptionSftpPath = "/C:/Windows/Temp/" + Path.GetFileName(remoteOptionPath).Replace('\\', '/');
-            string remoteDumpSftpPath = "/C:/Windows/Temp/" + Path.GetFileName(remoteDumpPath).Replace('\\', '/');
-            using (SshRemoteClient client = new SshRemoteClient(
-                server.IP,
-                RemoteExecutorFactory.GetManagementPort(server, RemoteTransport.SSH),
-                server.Username,
-                serverPassword))
+            string token = Guid.NewGuid().ToString("N");
+            string remoteOptionPath = server.Type == ServerType.Linux
+                ? "/tmp/xiaobai-mysql-" + token + ".cnf"
+                : "C:\\Windows\\Temp\\xiaobai-mysql-" + token + ".cnf";
+            string remoteDumpPath = server.Type == ServerType.Linux
+                ? "/tmp/xiaobai-mysql-" + token + ".sql"
+                : "C:\\Windows\\Temp\\xiaobai-mysql-" + token + ".sql";
+            string remoteOptionSftpPath = server.Type == ServerType.Linux
+                ? remoteOptionPath
+                : "/C:/Windows/Temp/" + Path.GetFileName(remoteOptionPath).Replace('\\', '/');
+            string remoteDumpSftpPath = server.Type == ServerType.Linux
+                ? remoteDumpPath
+                : "/C:/Windows/Temp/" + Path.GetFileName(remoteDumpPath).Replace('\\', '/');
+            using (SshRemoteClient client = new SshRemoteClient(server, serverPassword))
             {
                 try
                 {
                     await client.ConnectAsync(cancellationToken);
                     await client.UploadTextAsync(optionText, remoteOptionSftpPath, cancellationToken);
                     SshCommandResult preparation = await client.ExecuteAsync(
-                        BuildRemoteDumpFileCommand(request, remoteOptionPath, remoteDumpPath),
+                        server.Type == ServerType.Linux
+                            ? BuildLinuxRemoteDumpFileCommand(request, remoteOptionPath, remoteDumpPath)
+                            : BuildRemoteDumpFileCommand(request, remoteOptionPath, remoteDumpPath),
                         TimeSpan.FromMinutes(60),
                         cancellationToken);
                     if (preparation.ExitCode != 0)
@@ -187,7 +194,9 @@ namespace RDPManager
                         try
                         {
                             await client.ExecuteAsync(
-                                BuildRemoteCleanupCommand(remoteOptionPath, remoteDumpPath),
+                                server.Type == ServerType.Linux
+                                    ? "rm -f -- " + QuoteShell(remoteOptionPath) + " " + QuoteShell(remoteDumpPath)
+                                    : BuildRemoteCleanupCommand(remoteOptionPath, remoteDumpPath),
                                 TimeSpan.FromSeconds(20),
                                 CancellationToken.None);
                         }
@@ -283,6 +292,31 @@ finally {}
             return BuildPowerShellCommand(script);
         }
 
+        private static string BuildLinuxRemoteDumpFileCommand(MySqlBackupRequest request, string optionFile, string dumpFile)
+        {
+            List<string> arguments = new List<string>
+            {
+                "--defaults-extra-file=" + optionFile,
+                "--single-transaction",
+                "--hex-blob",
+                request.OverwriteExistingTables ? "--add-drop-table" : "--skip-add-drop-table"
+            };
+            if (request.IncludeRoutines) arguments.Add("--routines");
+            if (request.IncludeEvents) arguments.Add("--events");
+            if (request.IncludeTriggers) arguments.Add("--triggers");
+            arguments.Add("--databases");
+            arguments.AddRange(request.DatabaseNames);
+            arguments.Add("--result-file=" + dumpFile);
+            string quotedArguments = string.Join(" ", arguments.Select(QuoteShell));
+            return "set -e; chmod 600 " + QuoteShell(optionFile) + "; " +
+                "dump=$(command -v mariadb-dump 2>/dev/null || command -v mysqldump 2>/dev/null || true); " +
+                "[ -n \"$dump\" ] || { printf '数据库服务器上未找到 mariadb-dump 或 mysqldump\\n' >&2; exit 20; }; " +
+                "\"$dump\" " + quotedArguments + "; test -s " + QuoteShell(dumpFile) + "; " +
+                "length=$(wc -c < " + QuoteShell(dumpFile) + "); hash=$(sha256sum " + QuoteShell(dumpFile) + " | awk '{print $1}'); " +
+                "printf '{\"RemotePath\":\"%s\",\"Length\":%s,\"Sha256\":\"%s\",\"DumpTool\":\"%s\"}\\n' " +
+                QuoteShell(dumpFile) + " \"$length\" \"$hash\" \"$dump\"";
+        }
+
         private static string BuildRemoteCleanupCommand(string optionFile, string dumpFile)
         {
             return BuildPowerShellCommand(
@@ -359,6 +393,11 @@ finally {}
         private static string QuotePowerShell(string value)
         {
             return "'" + (value ?? "").Replace("'", "''") + "'";
+        }
+
+        private static string QuoteShell(string value)
+        {
+            return "'" + (value ?? "").Replace("'", "'\\''") + "'";
         }
 
         private static void ValidateCredential(DatabaseCredentialRecord credential)

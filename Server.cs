@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Drawing;
+using System.Text.Json.Serialization;
 using System.Xml.Serialization;
 
 namespace RDPManager
@@ -18,6 +19,13 @@ namespace RDPManager
         Automatic,
         SSH,
         WinRM
+    }
+
+    [Serializable]
+    public enum SshCredentialMode
+    {
+        Password,
+        PrivateKey
     }
 
     [Serializable]
@@ -90,11 +98,20 @@ namespace RDPManager
         public string CredentialId { get; set; }
         public RemoteManagementType ManagementType { get; set; }
         public string ManagementPort { get; set; }
+        public SshCredentialMode SshCredentialMode { get; set; }
+        public string SshPrivateKeyPath { get; set; }
         public List<ServicePortRecord> ServicePorts { get; set; }
         public List<DatabaseCredentialRecord> DatabaseCredentials { get; set; }
 
         [XmlIgnore]
         public string Password { get; set; }
+
+        [XmlIgnore]
+        public string SshPrivateKeyPassphrase { get; set; }
+
+        [XmlIgnore]
+        [JsonIgnore]
+        public string SudoPassword { get; set; }
 
         public Server()
         {
@@ -106,6 +123,7 @@ namespace RDPManager
             CredentialId = Guid.NewGuid().ToString("N");
             ManagementType = RemoteManagementType.Automatic;
             ManagementPort = "22";
+            SshCredentialMode = SshCredentialMode.Password;
             ServicePorts = new List<ServicePortRecord>();
             DatabaseCredentials = new List<DatabaseCredentialRecord>();
         }
@@ -130,6 +148,10 @@ namespace RDPManager
             CredentialId = string.IsNullOrWhiteSpace(source.CredentialId) ? CredentialId : source.CredentialId;
             ManagementType = source.ManagementType;
             ManagementPort = source.ManagementPort;
+            SshCredentialMode = source.SshCredentialMode;
+            SshPrivateKeyPath = source.SshPrivateKeyPath;
+            SshPrivateKeyPassphrase = source.SshPrivateKeyPassphrase;
+            SudoPassword = source.SudoPassword;
             ServicePorts = source.ServicePorts == null
                 ? new List<ServicePortRecord>()
                 : source.ServicePorts.ConvertAll(item => new ServicePortRecord
@@ -192,6 +214,8 @@ namespace RDPManager
                 Username = GetDefaultUsername();
             if (string.IsNullOrWhiteSpace(ManagementPort))
                 ManagementPort = Type == ServerType.Linux ? Port : "22";
+            if (SshCredentialMode != SshCredentialMode.Password && SshCredentialMode != SshCredentialMode.PrivateKey)
+                SshCredentialMode = SshCredentialMode.Password;
             if (ServicePorts == null)
                 ServicePorts = new List<ServicePortRecord>();
             if (DatabaseCredentials == null)

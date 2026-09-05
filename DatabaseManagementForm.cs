@@ -198,9 +198,10 @@ namespace RDPManager
             flow.Controls.Add(CreateMetricCard("已验证", readyCountLabel, Green));
             flow.Controls.Add(CreateMetricCard("待配置", pendingCountLabel, Orange));
 
-            Button deploy = CreateButton("部署数据库", Blue, true, 150);
+            Button deploy = CreateButton(server != null && server.Type == ServerType.Linux ? "Linux 部署待开发" : "部署数据库", Blue, true, 150);
             deploy.Dock = DockStyle.Fill;
             deploy.Margin = new Padding(0);
+            deploy.Enabled = server == null || server.Type == ServerType.Windows;
             deploy.Click += async (sender, args) => await OpenDatabaseDeploymentAsync();
 
             TableLayoutPanel layout = new TableLayoutPanel
@@ -432,7 +433,7 @@ namespace RDPManager
             int detected = services.Count(item => item.IsDetected);
             int errors = services.Count(item => item.StatusKind == DatabaseStatusKind.Error);
             return errors == 0
-                ? string.Format("服务状态来自远程检测 · 已发现 {0} 项 · MySQL/MariaDB 管理已开放", detected)
+                ? string.Format("服务状态来自远程检测 · 已发现 {0} 项 · SSH 隧道管理已开放", detected)
                 : string.Format("服务状态来自远程检测 · 已发现 {0} 项 · 异常 {1} 项", detected, errors);
         }
 
@@ -540,10 +541,16 @@ namespace RDPManager
         private static DatabaseServiceItem CreateDetectedItem(Server server, string type, string version, DetectedServicePort detected)
         {
             bool isOracle = string.Equals(type, "Oracle", StringComparison.OrdinalIgnoreCase);
-            bool isRunning = string.Equals(detected.ServiceStatus, "Running", StringComparison.OrdinalIgnoreCase);
+            bool isRunning = string.Equals(detected.ServiceStatus, "Running", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(detected.ServiceStatus, "active", StringComparison.OrdinalIgnoreCase);
             bool isStopped = string.Equals(detected.ServiceStatus, "Stopped", StringComparison.OrdinalIgnoreCase) ||
-                string.Equals(detected.ServiceStatus, "Paused", StringComparison.OrdinalIgnoreCase);
-            string serviceName = string.IsNullOrWhiteSpace(detected.DisplayName) ? detected.ServiceName : detected.DisplayName;
+                string.Equals(detected.ServiceStatus, "Paused", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(detected.ServiceStatus, "inactive", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(detected.ServiceStatus, "failed", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(detected.ServiceStatus, "dead", StringComparison.OrdinalIgnoreCase);
+            string serviceName = string.IsNullOrWhiteSpace(detected.DisplayName)
+                ? detected.ServiceName
+                : detected.DisplayName;
             bool verified = !isOracle && server != null && server.DatabaseCredentials != null && server.DatabaseCredentials.Any(credential =>
                 string.Equals(credential.DatabaseType, type, StringComparison.OrdinalIgnoreCase) &&
                 string.Equals(credential.ServiceName, serviceName, StringComparison.OrdinalIgnoreCase) &&

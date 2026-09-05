@@ -9,6 +9,7 @@ namespace RDPManager
     public sealed class SshRemoteClient : IDisposable
     {
         private readonly SshClient client;
+        private readonly PrivateKeyFile privateKeyFile;
 
         public SshRemoteClient(string host, int port, string username, string password)
         {
@@ -17,6 +18,62 @@ namespace RDPManager
                 Timeout = TimeSpan.FromSeconds(12)
             };
             client = new SshClient(connection);
+        }
+
+        public SshRemoteClient(string host, int port, string username, string privateKeyPath, string privateKeyPassphrase)
+        {
+            if (string.IsNullOrWhiteSpace(privateKeyPath))
+                throw new InvalidOperationException("未指定 SSH 私钥文件");
+            if (!File.Exists(privateKeyPath))
+                throw new FileNotFoundException("SSH 私钥文件不存在", privateKeyPath);
+
+            privateKeyFile = string.IsNullOrEmpty(privateKeyPassphrase)
+                ? new PrivateKeyFile(privateKeyPath)
+                : new PrivateKeyFile(privateKeyPath, privateKeyPassphrase);
+            PrivateKeyConnectionInfo connection = new PrivateKeyConnectionInfo(host, port, username, privateKeyFile)
+            {
+                Timeout = TimeSpan.FromSeconds(12)
+            };
+            client = new SshClient(connection);
+        }
+
+        public SshRemoteClient(Server server, string password)
+            : this(
+                server == null ? "" : server.IP,
+                server == null ? 22 : RemoteExecutorFactory.GetManagementPort(server, RemoteTransport.SSH),
+                server == null ? "" : server.Username,
+                password,
+                server != null && server.Type == ServerType.Linux && server.SshCredentialMode == SshCredentialMode.PrivateKey ? server.SshPrivateKeyPath : "",
+                server != null && server.Type == ServerType.Linux && server.SshCredentialMode == SshCredentialMode.PrivateKey ? server.SshPrivateKeyPassphrase : "")
+        {
+        }
+
+        private SshRemoteClient(
+            string host,
+            int port,
+            string username,
+            string password,
+            string privateKeyPath,
+            string privateKeyPassphrase)
+        {
+            if (!string.IsNullOrWhiteSpace(privateKeyPath))
+            {
+                if (!File.Exists(privateKeyPath))
+                    throw new FileNotFoundException("SSH 私钥文件不存在", privateKeyPath);
+                privateKeyFile = string.IsNullOrEmpty(privateKeyPassphrase)
+                    ? new PrivateKeyFile(privateKeyPath)
+                    : new PrivateKeyFile(privateKeyPath, privateKeyPassphrase);
+                client = new SshClient(new PrivateKeyConnectionInfo(host, port, username, privateKeyFile)
+                {
+                    Timeout = TimeSpan.FromSeconds(12)
+                });
+                return;
+            }
+
+            client = new SshClient(new PasswordConnectionInfo(host, port, username, password ?? "")
+            {
+                Timeout = TimeSpan.FromSeconds(12)
+            });
         }
 
         public Task ConnectAsync(CancellationToken cancellationToken)
@@ -42,6 +99,45 @@ namespace RDPManager
                 {
                     sshCommand.CommandTimeout = timeout;
                     IAsyncResult asyncResult = sshCommand.BeginExecute();
+                    while (!asyncResult.IsCompleted)
+                    {
+                        cancellationToken.ThrowIfCancellationRequested();
+                        Thread.Sleep(100);
+                    }
+
+                    string output = sshCommand.EndExecute(asyncResult);
+                    return new SshCommandResult
+                    {
+                        ExitCode = sshCommand.ExitStatus ?? -1,
+                        Output = output,
+                        Error = sshCommand.Error
+                    };
+                }
+            }, cancellationToken);
+        }
+
+        public Task<SshCommandResult> ExecuteWithInputAsync(
+            string command,
+            string input,
+            TimeSpan timeout,
+            CancellationToken cancellationToken)
+        {
+            return Task.Run(() =>
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (!client.IsConnected)
+                    throw new InvalidOperationException("SSH 连接已断开");
+
+                using (SshCommand sshCommand = client.CreateCommand(command))
+                {
+                    sshCommand.CommandTimeout = timeout;
+                    IAsyncResult asyncResult = sshCommand.BeginExecute();
+                    using (Stream stream = sshCommand.CreateInputStream())
+                    {
+                        byte[] bytes = System.Text.Encoding.UTF8.GetBytes(input ?? "");
+                        stream.Write(bytes, 0, bytes.Length);
+                        stream.Flush();
+                    }
                     while (!asyncResult.IsCompleted)
                     {
                         cancellationToken.ThrowIfCancellationRequested();
@@ -159,6 +255,7 @@ namespace RDPManager
             if (client.IsConnected)
                 client.Disconnect();
             client.Dispose();
+            privateKeyFile?.Dispose();
         }
     }
 

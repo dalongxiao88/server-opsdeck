@@ -69,11 +69,13 @@ namespace RDPManager
             if (string.IsNullOrWhiteSpace(directory)) throw new InvalidOperationException("备份文件目录无效");
             Directory.CreateDirectory(directory);
 
-            string remoteCopy = "C:\\Windows\\Temp\\xiaobai-redis-" + Guid.NewGuid().ToString("N") + ".rdb";
-            string sftpCopy = "/C:/Windows/Temp/" + Path.GetFileName(remoteCopy);
+            string remoteCopy = server.Type == ServerType.Linux
+                ? "/tmp/xiaobai-redis-" + Guid.NewGuid().ToString("N") + ".rdb"
+                : "C:\\Windows\\Temp\\xiaobai-redis-" + Guid.NewGuid().ToString("N") + ".rdb";
+            string sftpCopy = server.Type == ServerType.Linux ? remoteCopy : "/C:/Windows/Temp/" + Path.GetFileName(remoteCopy);
             string localPartial = outputPath + ".partial-" + Guid.NewGuid().ToString("N");
 
-            using (SshRemoteClient client = new SshRemoteClient(server.IP, RemoteExecutorFactory.GetManagementPort(server, RemoteTransport.SSH), server.Username, serverPassword))
+            using (SshRemoteClient client = new SshRemoteClient(server, serverPassword))
             {
                 try
                 {
@@ -89,10 +91,15 @@ namespace RDPManager
                         await WaitForSnapshotAsync(connection, before, TimeSpan.FromMinutes(5), cancellationToken);
                     }
 
-                    SshCommandResult copy = await client.ExecutePowerShellAsync(
-                        "Copy-Item -LiteralPath " + Quote(config.DirectoryPath + "\\" + config.DbFileName) + " -Destination " + Quote(remoteCopy) + " -Force; $hash=(Get-FileHash -LiteralPath " + Quote(remoteCopy) + " -Algorithm SHA256).Hash; [pscustomobject]@{RemotePath=" + Quote(remoteCopy) + ";Length=[int64](Get-Item -LiteralPath " + Quote(remoteCopy) + ").Length;Sha256=$hash;FileName=" + Quote(config.DbFileName) + "}|ConvertTo-Json -Compress",
-                        TimeSpan.FromSeconds(30),
-                        cancellationToken);
+                    SshCommandResult copy = server.Type == ServerType.Linux
+                        ? await client.ExecuteAsync(
+                            "set -e; cp -- " + QuoteShell(config.DirectoryPath.TrimEnd('/') + "/" + config.DbFileName) + " " + QuoteShell(remoteCopy) + "; length=$(wc -c < " + QuoteShell(remoteCopy) + "); hash=$(sha256sum " + QuoteShell(remoteCopy) + " | awk '{print $1}'); printf '{\"RemotePath\":\"%s\",\"Length\":%s,\"Sha256\":\"%s\",\"FileName\":\"%s\"}\\n' " + QuoteShell(remoteCopy) + " \"$length\" \"$hash\" " + QuoteShell(config.DbFileName),
+                            TimeSpan.FromSeconds(30),
+                            cancellationToken)
+                        : await client.ExecutePowerShellAsync(
+                            "Copy-Item -LiteralPath " + Quote(config.DirectoryPath + "\\" + config.DbFileName) + " -Destination " + Quote(remoteCopy) + " -Force; $hash=(Get-FileHash -LiteralPath " + Quote(remoteCopy) + " -Algorithm SHA256).Hash; [pscustomobject]@{RemotePath=" + Quote(remoteCopy) + ";Length=[int64](Get-Item -LiteralPath " + Quote(remoteCopy) + ").Length;Sha256=$hash;FileName=" + Quote(config.DbFileName) + "}|ConvertTo-Json -Compress",
+                            TimeSpan.FromSeconds(30),
+                            cancellationToken);
                     if (copy.ExitCode != 0)
                         throw new InvalidOperationException("复制 Redis RDB 文件失败：" + RemoteErrorFormatter.Format(new RemoteCommandResult { ExitCode = copy.ExitCode, Output = copy.Output, Error = copy.Error }));
                     RedisRemoteArtifact artifact = JsonSerializer.Deserialize<RedisRemoteArtifact>((copy.Output ?? "").Trim());
@@ -106,7 +113,14 @@ namespace RDPManager
                 }
                 finally
                 {
-                    try { await client.ExecutePowerShellAsync("Remove-Item -LiteralPath " + Quote(remoteCopy) + " -Force -ErrorAction SilentlyContinue", TimeSpan.FromSeconds(20), CancellationToken.None); } catch { }
+                    try
+                    {
+                        if (server.Type == ServerType.Linux)
+                            await client.ExecuteAsync("rm -f -- " + QuoteShell(remoteCopy), TimeSpan.FromSeconds(20), CancellationToken.None);
+                        else
+                            await client.ExecutePowerShellAsync("Remove-Item -LiteralPath " + Quote(remoteCopy) + " -Force -ErrorAction SilentlyContinue", TimeSpan.FromSeconds(20), CancellationToken.None);
+                    }
+                    catch { }
                     try { if (File.Exists(localPartial)) File.Delete(localPartial); } catch { }
                 }
             }
@@ -177,6 +191,7 @@ namespace RDPManager
         private static string ReadInfo(string text, string key) { return (text ?? "").Split('\n').Select(line => line.Trim()).Where(line => line.StartsWith(key + ":", StringComparison.OrdinalIgnoreCase)).Select(line => line.Substring(key.Length + 1).Trim()).FirstOrDefault() ?? ""; }
         private static string ComputeSha256(string path, CancellationToken token) { using (FileStream stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read)) using (SHA256 sha = SHA256.Create()) { byte[] buffer = new byte[65536]; int n; while ((n=stream.Read(buffer,0,buffer.Length))>0){token.ThrowIfCancellationRequested();sha.TransformBlock(buffer,0,n,null,0);} sha.TransformFinalBlock(Array.Empty<byte>(),0,0);return Convert.ToHexString(sha.Hash); } }
         private static string Quote(string value) => "'" + (value ?? "").Replace("'", "''") + "'";
+        private static string QuoteShell(string value) => "'" + (value ?? "").Replace("'", "'\\''") + "'";
         private static void ValidateCredential(DatabaseCredentialRecord credential) { if (credential == null || credential.Port < 1 || credential.Port > 65535 || string.IsNullOrEmpty(credential.Password)) throw new InvalidOperationException("Redis 凭据不完整"); }
     }
 

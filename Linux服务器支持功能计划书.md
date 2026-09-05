@@ -1,6 +1,6 @@
 # Linux 服务器支持功能计划书
 
-版本：v1.0 首期规划稿  
+版本：v1.1 第一阶段实现稿
 更新时间：2026-09-05  
 适用项目：小白服务器管理器
 
@@ -264,3 +264,27 @@ SSH 连接成功后读取 `/etc/os-release`、内核信息、架构、当前用�
 - Windows 现有功能不回归
 - 发布前完成源码构建、功能回归和敏感信息扫描
 
+## 十、当前实现状态
+
+截至本计划书更新时间，代码已完成以下部分：
+
+- Linux 服务器类型、SSH 密码认证和 SSH 私钥认证
+- 私钥文件选择、带口令私钥验证和加密保险库保存
+- Linux 发行版、内核、架构、CPU、内存、磁盘、systemd、sudo、防火墙和 SSH 端口画像
+- Linux 系统信息二级窗口
+- Linux 远程重启及 Ping/SSH/启动时间恢复验证
+- Linux SSH 端口双端口迁移、端口冲突检查、配置语法校验、防火墙规则和失败回滚
+- Linux MySQL/MariaDB、MongoDB、Redis 服务发现
+- 通过 SSH 隧道复用数据库版本、用户、权限等管理能力
+- MySQL/MariaDB、MongoDB、Redis 的 Linux 远程备份下载路径
+- 21 项本地自测和新增窗口的位图渲染检查
+
+以下内容仍需接入 Linux 测试机后继续实现或验收：
+
+- Ubuntu、Debian、Rocky Linux、AlmaLinux 实机 SSH 连接和重启回归
+- 四类发行版的防火墙、SELinux 和 SSH 端口迁移实机验证
+- Linux 数据库备份的真实权限、服务路径和工具版本回归
+- Linux HTTP/HTTPS 端口适配
+- Linux 数据库端口修改
+- Linux 数据库一键部署
+- Linux 数据库恢复和迁移的本机目标适配

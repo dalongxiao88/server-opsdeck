@@ -66,24 +66,27 @@ namespace RDPManager
             if (string.IsNullOrWhiteSpace(directory))
                 throw new InvalidOperationException("备份文件目录无效");
             Directory.CreateDirectory(directory);
-            string remoteConfig = "C:\\Windows\\Temp\\xiaobai-mongo-" + Guid.NewGuid().ToString("N") + ".yaml";
-            string remoteArchive = "C:\\Windows\\Temp\\xiaobai-mongo-" + Guid.NewGuid().ToString("N") + ".archive.gz";
-            string sftpConfig = "/C:/Windows/Temp/" + Path.GetFileName(remoteConfig);
-            string sftpArchive = "/C:/Windows/Temp/" + Path.GetFileName(remoteArchive);
+            string token = Guid.NewGuid().ToString("N");
+            string remoteConfig = server.Type == ServerType.Linux
+                ? "/tmp/xiaobai-mongo-" + token + ".yaml"
+                : "C:\\Windows\\Temp\\xiaobai-mongo-" + token + ".yaml";
+            string remoteArchive = server.Type == ServerType.Linux
+                ? "/tmp/xiaobai-mongo-" + token + ".archive.gz"
+                : "C:\\Windows\\Temp\\xiaobai-mongo-" + token + ".archive.gz";
+            string sftpConfig = server.Type == ServerType.Linux ? remoteConfig : "/C:/Windows/Temp/" + Path.GetFileName(remoteConfig);
+            string sftpArchive = server.Type == ServerType.Linux ? remoteArchive : "/C:/Windows/Temp/" + Path.GetFileName(remoteArchive);
             string rawPath = outputPath + ".partial-" + Guid.NewGuid().ToString("N") + ".archive.gz";
 
-            using (SshRemoteClient client = new SshRemoteClient(
-                server.IP,
-                RemoteExecutorFactory.GetManagementPort(server, RemoteTransport.SSH),
-                server.Username,
-                serverPassword))
+            using (SshRemoteClient client = new SshRemoteClient(server, serverPassword))
             {
                 try
                 {
                     await client.ConnectAsync(cancellationToken);
                     await client.UploadTextAsync(BuildConfigFile(credential), sftpConfig, cancellationToken);
                     SshCommandResult result = await client.ExecuteAsync(
-                        BuildDumpCommand(credential, request, remoteConfig, remoteArchive),
+                        server.Type == ServerType.Linux
+                            ? BuildLinuxDumpCommand(credential, request, remoteConfig, remoteArchive)
+                            : BuildDumpCommand(credential, request, remoteConfig, remoteArchive),
                         TimeSpan.FromMinutes(90),
                         cancellationToken);
                     if (result.ExitCode != 0)
@@ -101,7 +104,16 @@ namespace RDPManager
                 }
                 finally
                 {
-                    try { await client.ExecuteAsync(BuildCleanupCommand(remoteConfig, remoteArchive), TimeSpan.FromSeconds(20), CancellationToken.None); } catch { }
+                    try
+                    {
+                        await client.ExecuteAsync(
+                            server.Type == ServerType.Linux
+                                ? "rm -f -- " + QuoteShell(remoteConfig) + " " + QuoteShell(remoteArchive)
+                                : BuildCleanupCommand(remoteConfig, remoteArchive),
+                            TimeSpan.FromSeconds(20),
+                            CancellationToken.None);
+                    }
+                    catch { }
                     try { if (File.Exists(rawPath)) File.Delete(rawPath); } catch { }
                 }
             }
@@ -243,6 +255,30 @@ $hash=(Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash
             return BuildPowerShellCommand(script);
         }
 
+        private static string BuildLinuxDumpCommand(DatabaseCredentialRecord credential, MongoBackupRequest request, string config, string archive)
+        {
+            List<string> args = new List<string>
+            {
+                "--config=" + config,
+                "--username=" + credential.Username,
+                "--host=" + credential.Host,
+                "--port=" + credential.Port,
+                "--authenticationDatabase=" + (string.IsNullOrWhiteSpace(credential.AuthenticationDatabase) ? "admin" : credential.AuthenticationDatabase),
+                "--archive=" + archive,
+                "--gzip"
+            };
+            if (request.IncludeUsersAndRoles && !string.IsNullOrWhiteSpace(request.DatabaseName))
+                args.Add("--dumpDbUsersAndRoles");
+            if (!string.IsNullOrWhiteSpace(request.DatabaseName))
+                args.Add("--db=" + request.DatabaseName);
+            return "set -e; chmod 600 " + QuoteShell(config) + "; dump=$(command -v mongodump 2>/dev/null || true); " +
+                "[ -n \"$dump\" ] || { printf '数据库服务器上未找到 mongodump\\n' >&2; exit 20; }; " +
+                "\"$dump\" " + string.Join(" ", args.Select(QuoteShell)) + " >/dev/null; test -s " + QuoteShell(archive) + "; " +
+                "length=$(wc -c < " + QuoteShell(archive) + "); hash=$(sha256sum " + QuoteShell(archive) + " | awk '{print $1}'); " +
+                "printf '{\"RemotePath\":\"%s\",\"Length\":%s,\"Sha256\":\"%s\",\"DumpTool\":\"%s\"}\\n' " +
+                QuoteShell(archive) + " \"$length\" \"$hash\" \"$dump\"";
+        }
+
         private static string BuildCleanupCommand(string config, string archive) => BuildPowerShellCommand("Remove-Item -LiteralPath " + QuotePowerShell(config) + "," + QuotePowerShell(archive) + " -Force -ErrorAction SilentlyContinue");
         private static string BuildPowerShellCommand(string script)
         {
@@ -252,6 +288,7 @@ $hash=(Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash
         private static MongoRemoteArtifact ParseArtifact(string output) { MongoRemoteArtifact artifact = JsonSerializer.Deserialize<MongoRemoteArtifact>((output ?? "").Trim()); if (artifact == null || string.IsNullOrWhiteSpace(artifact.RemotePath) || artifact.Length <= 0 || string.IsNullOrWhiteSpace(artifact.Sha256)) throw new InvalidOperationException("MongoDB 备份信息不完整"); return artifact; }
         private static string ComputeSha256(string path, CancellationToken cancellationToken) { using (FileStream stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read)) using (SHA256 sha = SHA256.Create()) { byte[] buffer = new byte[64 * 1024]; int read; while ((read = stream.Read(buffer, 0, buffer.Length)) > 0) { cancellationToken.ThrowIfCancellationRequested(); sha.TransformBlock(buffer, 0, read, null, 0); } sha.TransformFinalBlock(Array.Empty<byte>(), 0, 0); return Convert.ToHexString(sha.Hash); } }
         private static string QuotePowerShell(string value) => "'" + (value ?? "").Replace("'", "''") + "'";
+        private static string QuoteShell(string value) => "'" + (value ?? "").Replace("'", "'\\''") + "'";
         private static string YamlValue(string value) => "'" + (value ?? "").Replace("'", "''") + "'";
         private static void ValidateCredential(DatabaseCredentialRecord credential) { if (credential == null || string.IsNullOrWhiteSpace(credential.Username) || string.IsNullOrEmpty(credential.Password) || credential.Port < 1 || credential.Port > 65535) throw new InvalidOperationException("MongoDB 凭据不完整"); if (string.IsNullOrWhiteSpace(credential.Host)) credential.Host = "127.0.0.1"; }
         private static void ValidateName(string value) { if (string.IsNullOrWhiteSpace(value) || value.Length > 128 || value.Any(ch => !(char.IsLetterOrDigit(ch) || ch == '_' || ch == '-' || ch == '.'))) throw new InvalidOperationException("MongoDB 数据库名称格式无效"); }

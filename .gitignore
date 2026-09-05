@@ -8,6 +8,7 @@ publish/
 
 # Local deployment packages and generated binaries
 发布包_*/
+发布包/
 *.exe
 *.dll
 *.pdb
@@ -37,4 +38,3 @@ work/
 
 # NuGet packages
 packages/
-

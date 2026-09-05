@@ -37,6 +37,8 @@ namespace RDPManager
                         CredentialId = record.CredentialId,
                         ManagementType = record.ManagementType,
                         ManagementPort = record.ManagementPort,
+                        SshCredentialMode = record.SshCredentialMode,
+                        SshPrivateKeyPath = record.SshPrivateKeyPath,
                         ServicePorts = record.ServicePorts,
                         DatabaseCredentials = record.DatabaseCredentials
                     };
@@ -75,6 +77,8 @@ namespace RDPManager
                     CredentialId = server.CredentialId,
                     ManagementType = server.ManagementType,
                     ManagementPort = server.ManagementPort,
+                    SshCredentialMode = server.SshCredentialMode,
+                    SshPrivateKeyPath = server.SshPrivateKeyPath,
                     ServicePorts = server.ServicePorts
                 });
             }
@@ -105,6 +109,8 @@ namespace RDPManager
                     CredentialId = record.CredentialId,
                     ManagementType = record.ManagementType,
                     ManagementPort = record.ManagementPort,
+                    SshCredentialMode = record.SshCredentialMode,
+                    SshPrivateKeyPath = record.SshPrivateKeyPath,
                     ServicePorts = record.ServicePorts,
                     DatabaseCredentials = record.DatabaseCredentials
                 };
@@ -139,6 +145,8 @@ namespace RDPManager
             public string CredentialId { get; set; }
             public RemoteManagementType ManagementType { get; set; }
             public string ManagementPort { get; set; }
+            public SshCredentialMode SshCredentialMode { get; set; }
+            public string SshPrivateKeyPath { get; set; }
             public List<ServicePortRecord> ServicePorts { get; set; }
             public List<DatabaseCredentialRecord> DatabaseCredentials { get; set; }
         }
