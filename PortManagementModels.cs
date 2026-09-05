@@ -37,12 +37,15 @@ namespace RDPManager
         public int OldPort { get; set; }
         public int NewPort { get; set; }
         public string BackupPath { get; set; }
+        public string OriginalMode { get; set; }
+        public bool BackupCreated { get; set; }
         public string FirewallRuleName { get; set; }
         public bool FirewallRuleCreated { get; set; }
         public string FirewallBackend { get; set; }
         public string FirewallPortSpec { get; set; }
         public string FirewallSourceIp { get; set; }
         public bool SelinuxRuleCreated { get; set; }
+        public string SelinuxPortType { get; set; }
         public bool ServiceRestarted { get; set; }
         public bool VerifiedWithNewConnection { get; set; }
     }

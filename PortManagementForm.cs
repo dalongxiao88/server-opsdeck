@@ -181,7 +181,9 @@ namespace RDPManager
                 warningLabel.Text = "点击新端口输入框会先检测远程端口；修改连接端口可能导致当前连接中断";
             else if (item.ServiceType == "HTTP" || item.ServiceType == "HTTPS")
                 warningLabel.Text = item.IsSupported
-                    ? "请先确认 IIS 站点绑定中的当前端口；程序只修改当前选中的站点绑定"
+                    ? item.ConfigPath.IndexOf("nginx", StringComparison.OrdinalIgnoreCase) >= 0
+                        ? "请先确认 Nginx 配置中的当前端口；程序只修改当前识别到的 listen 配置"
+                        : "请先确认 Apache 配置中的当前端口；程序只修改当前识别到的 Listen/VirtualHost 配置"
                     : "未识别到明确配置文件，程序不会自动修改此 Web 服务";
             else
                 warningLabel.Text = "修改前会自动备份配置；验证失败时尝试恢复原端口";
@@ -223,7 +225,7 @@ namespace RDPManager
             if (item.ServiceType == "HTTP" || item.ServiceType == "HTTPS")
             {
                 DialogResult confirmation = MessageBox.Show(
-                    "请务必先确认服务器实际配置中的当前端口为 " + item.Port + "。\n\n程序只会修改当前选中的 IIS 站点绑定，不会替你猜测 Nginx、Apache 或容器配置。\n\n确认继续吗？",
+                    "请务必先确认服务器实际配置中的当前端口为 " + item.Port + "。\n\n程序只会修改当前识别到的 Nginx/Apache 配置文件，不会替你猜测容器、反向代理或其他站点配置。\n\n确认继续吗？",
                     "确认 Web 配置",
                     MessageBoxButtons.YesNo,
                     MessageBoxIcon.Warning);

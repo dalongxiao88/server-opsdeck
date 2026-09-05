@@ -1263,11 +1263,11 @@ namespace RDPManager
                 if (server.Type == ServerType.Linux)
                 {
                     inspection.Services = inspection.Services
-                        .Where(item => string.Equals(item.ServiceType, "SSH", StringComparison.OrdinalIgnoreCase))
+                        .Where(item => string.Equals(item.ServiceType, "SSH", StringComparison.OrdinalIgnoreCase) || item.IsSupported)
                         .ToList();
                     if (inspection.Services.Count == 0)
                     {
-                        MessageBox.Show("未识别到可安全管理的 Linux SSH 服务。数据库端口修改将在后续 Linux 数据库适配阶段开放。", "没有可管理端口", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                        MessageBox.Show("未识别到可安全管理的 Linux SSH 或数据库服务。", "没有可管理端口", MessageBoxButtons.OK, MessageBoxIcon.Information);
                         return;
                     }
                 }
@@ -1395,13 +1395,17 @@ namespace RDPManager
                 using (DatabaseManagementForm form = new DatabaseManagementForm(
                     server,
                     inspection,
-                    token => new PortManagementService().InspectAsync(server, password, token),
+                    token => server.Type == ServerType.Linux
+                        ? new LinuxPortManagementService().InspectAsync(server, password, token)
+                        : new PortManagementService().InspectAsync(server, password, token),
                     password,
                     () => SaveServerData()))
                     form.ShowDialog(this);
             }
             finally
             {
+                if (server.Type == ServerType.Linux)
+                    server.SudoPassword = null;
                 operationRunning = false;
                 UpdateSelectionInfo();
             }

@@ -88,8 +88,8 @@ namespace RDPManager
                 server == null ? 22 : RemoteExecutorFactory.GetManagementPort(server, RemoteTransport.SSH),
                 server == null ? "" : server.Username,
                 password,
-                server != null && server.SshCredentialMode == SshCredentialMode.PrivateKey ? server.SshPrivateKeyPath : "",
-                server != null && server.SshCredentialMode == SshCredentialMode.PrivateKey ? server.SshPrivateKeyPassphrase : "",
+                server != null && server.Type == ServerType.Linux && server.SshCredentialMode == SshCredentialMode.PrivateKey ? server.SshPrivateKeyPath : "",
+                server != null && server.Type == ServerType.Linux && server.SshCredentialMode == SshCredentialMode.PrivateKey ? server.SshPrivateKeyPassphrase : "",
                 server != null && server.Type == ServerType.Linux)
         {
         }
@@ -166,7 +166,7 @@ namespace RDPManager
                 "HAS_SYSTEMD=false; command -v systemctl >/dev/null 2>&1 && HAS_SYSTEMD=true; " +
                 "PACKAGE_MANAGER=unknown; if command -v apt-get >/dev/null 2>&1; then PACKAGE_MANAGER=apt; elif command -v dnf >/dev/null 2>&1; then PACKAGE_MANAGER=dnf; elif command -v yum >/dev/null 2>&1; then PACKAGE_MANAGER=yum; fi; " +
                 "FIREWALL=none; if command -v ufw >/dev/null 2>&1; then FIREWALL=ufw; elif command -v firewall-cmd >/dev/null 2>&1; then FIREWALL=firewalld; elif command -v nft >/dev/null 2>&1; then FIREWALL=nftables; elif command -v iptables >/dev/null 2>&1; then FIREWALL=iptables; fi; " +
-                "SSH_PORT=$(printf '%s\\n' \"$SSH_CONNECTION\" | awk '{print $4}'); [ -n \"$SSH_PORT\" ] || SSH_PORT=$(sshd -T 2>/dev/null | awk '$1==\"port\"{print $2; exit}'); " +
+                "SSHD=$(command -v sshd 2>/dev/null || printf /usr/sbin/sshd); SSH_PORT=$(printf '%s\\n' \"$SSH_CONNECTION\" | awk '{print $4}'); [ -n \"$SSH_PORT\" ] || SSH_PORT=$(\"$SSHD\" -T 2>/dev/null | awk '$1==\"port\"{print $2; exit}'); " +
                 "[ -n \"$SSH_PORT\" ] || SSH_PORT=22; " +
                 "printf 'XIAOBAI_HOSTNAME=%s\\n' \"$(hostname 2>/dev/null)\"; " +
                 "printf 'XIAOBAI_USERNAME=%s\\n' \"$(id -un 2>/dev/null)\"; " +

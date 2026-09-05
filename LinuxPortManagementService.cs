@@ -46,6 +46,7 @@ namespace RDPManager
                     result.Warnings.Add("未找到可识别的 sshd_config 或 systemd SSH 服务");
                 }
                 result.Services.AddRange(await DetectDatabaseTargetsAsync(executor, cancellationToken));
+                result.Services.AddRange(await DetectWebTargetsAsync(executor, cancellationToken));
                 return result;
             }
         }
@@ -106,6 +107,28 @@ namespace RDPManager
             if (!SafeConfigPath.IsMatch(configPath ?? "") || !Regex.IsMatch(serviceName ?? "", @"^[A-Za-z][A-Za-z0-9_.@-]{0,63}$"))
                 throw new InvalidOperationException("SSH 配置目标无法安全确认");
 
+            if (!string.Equals(request.Target.ServiceType, "SSH", StringComparison.OrdinalIgnoreCase) &&
+                IsDatabaseType(request.Target.ServiceType))
+            {
+                await ExecuteDatabasePortChangeAsync(
+                    server,
+                    password,
+                    request,
+                    configPath,
+                    serviceName,
+                    sudoPasswordProvider,
+                    report,
+                    cancellationToken);
+                return;
+            }
+            if (!string.Equals(request.Target.ServiceType, "SSH", StringComparison.OrdinalIgnoreCase))
+            {
+                if (request.Target.ServiceType != "HTTP" && request.Target.ServiceType != "HTTPS")
+                    throw new InvalidOperationException("Linux 暂不支持该服务类型的端口修改");
+                await ExecuteWebPortChangeAsync(server, password, request, configPath, serviceName, sudoPasswordProvider, report, cancellationToken);
+                return;
+            }
+
             using (IRemoteExecutor oldExecutor = await RemoteExecutorFactory.CreateAsync(server, password, cancellationToken, RemoteTransport.SSH))
             {
                 PortChangeSession session = new PortChangeSession
@@ -149,8 +172,11 @@ namespace RDPManager
                         throw new InvalidOperationException("新端口已被 Linux 其他服务占用");
 
                     report(22, "正在备份 SSH 配置", configPath);
-                    string backupCommand = "test ! -e " + ShellQuote(session.BackupPath) + " && umask 077 && cp -p " + ShellQuote(configPath) + " " + ShellQuote(session.BackupPath) + " && chmod 600 " + ShellQuote(session.BackupPath) + " && test -s " + ShellQuote(session.BackupPath) + " && printf 'SSH_CONFIG_BACKED_UP\\n'";
-                    EnsureSuccess(await RunPrivilegedAsync(oldExecutor, info, backupCommand, TimeSpan.FromSeconds(20), cancellationToken), "备份 SSH 配置");
+                    string backupCommand = "test ! -e " + ShellQuote(session.BackupPath) + " && mode=$(stat -c '%a' " + ShellQuote(configPath) + ") && umask 077 && cp -p " + ShellQuote(configPath) + " " + ShellQuote(session.BackupPath) + " && chmod 600 " + ShellQuote(session.BackupPath) + " && test -s " + ShellQuote(session.BackupPath) + " && printf 'XIAOBAI_BACKUP_MODE=%s\\n' \"$mode\"";
+                    RemoteCommandResult backupResult = await RunPrivilegedAsync(oldExecutor, info, backupCommand, TimeSpan.FromSeconds(20), cancellationToken);
+                    EnsureSuccess(backupResult, "备份 SSH 配置");
+                    session.OriginalMode = ReadBackupMode(backupResult.Output);
+                    session.BackupCreated = true;
 
                     report(30, "正在配置 Linux 防火墙", request.ConfigureFirewall ? "为新 SSH 端口创建可回滚规则" : "已跳过自动防火墙配置");
                     if (request.ConfigureFirewall)
@@ -167,7 +193,7 @@ namespace RDPManager
                         throw new InvalidOperationException("Linux 防火墙处于启用状态；请勾选自动配置防火墙，避免修改后无法连接");
                     }
 
-                    await EnsureSelinuxPortAsync(oldExecutor, info, request.NewPort, session, cancellationToken);
+                    await EnsureSelinuxPortAsync(oldExecutor, info, request.NewPort, session, "ssh_port_t", cancellationToken);
 
                     report(42, "正在准备 SSH 双端口", "保留 " + session.OldPort + "，临时加入 " + session.NewPort);
                     string dualCommand = BuildDualListenCommand(configPath, session.BackupPath, session.OldPort, session.NewPort, serviceName);
@@ -202,8 +228,14 @@ namespace RDPManager
                     using (SshRemoteExecutor verify = new SshRemoteExecutor(server, password, request.NewPort))
                     {
                         await verify.ConnectAsync(cancellationToken);
-                        await verify.GetSystemInfoAsync(cancellationToken);
-                        EnsureSuccess(await RunPrivilegedAsync(verify, info, "rm -f " + ShellQuote(session.BackupPath) + " && printf 'SSH_BACKUP_CLEANED\\n'", TimeSpan.FromSeconds(20), cancellationToken), "清理 SSH 临时备份");
+                        RemoteSystemInfo verifyInfo = await verify.GetSystemInfoAsync(cancellationToken);
+                        verifyInfo.SudoPassword = info.SudoPassword;
+                        if (session.FirewallRuleCreated)
+                        {
+                            await RemoveFirewallRuleAsync(verify, verifyInfo, session, cancellationToken);
+                            session.FirewallRuleCreated = false;
+                        }
+                        EnsureSuccess(await RunPrivilegedAsync(verify, verifyInfo, "test -f " + ShellQuote(session.BackupPath) + " && rm -f " + ShellQuote(session.BackupPath) + " && printf 'SSH_BACKUP_CLEANED\\n'", TimeSpan.FromSeconds(20), cancellationToken), "清理 SSH 临时备份");
                     }
                     request.Target.Port = request.NewPort;
                     report(100, "修改完成", "SSH 已安全切换到 " + request.NewPort);
@@ -211,17 +243,26 @@ namespace RDPManager
                 catch
                 {
                     report(80, "正在自动回滚 SSH", "恢复配置、防火墙和原端口");
-                    IRemoteExecutor rollbackExecutor = session.VerifiedWithNewConnection ? newExecutor : oldExecutor;
-                    try
+                    if (session.BackupCreated)
                     {
-                        if (rollbackExecutor == null)
-                            throw new InvalidOperationException("没有可用的 SSH 回滚连接");
-                        RemoteSystemInfo rollbackInfo = await rollbackExecutor.GetSystemInfoAsync(CancellationToken.None);
-                        await RollbackAsync(rollbackExecutor, rollbackInfo, session, serviceName, CancellationToken.None);
+                        IRemoteExecutor rollbackExecutor = session.VerifiedWithNewConnection ? newExecutor : oldExecutor;
+                        try
+                        {
+                            if (rollbackExecutor == null)
+                                throw new InvalidOperationException("没有可用的 SSH 回滚连接");
+                            RemoteSystemInfo rollbackInfo = await rollbackExecutor.GetSystemInfoAsync(CancellationToken.None);
+                            rollbackInfo.SudoPassword = session.Target == null ? null : server.SudoPassword;
+                            await RollbackAsync(rollbackExecutor, rollbackInfo, session, serviceName, CancellationToken.None);
+                        }
+                        catch (Exception rollbackError)
+                        {
+                            throw new InvalidOperationException("Linux SSH 修改失败，且自动回滚未完成：" + rollbackError.Message);
+                        }
                     }
-                    catch (Exception rollbackError)
+                    else if (session.FirewallRuleCreated)
                     {
-                        throw new InvalidOperationException("Linux SSH 修改失败，且自动回滚未完成：" + rollbackError.Message);
+                        RemoteSystemInfo cleanupInfo = await oldExecutor.GetSystemInfoAsync(CancellationToken.None);
+                        await RemoveFirewallRuleAsync(oldExecutor, cleanupInfo, session, CancellationToken.None);
                     }
                     throw;
                 }
@@ -239,14 +280,317 @@ namespace RDPManager
             string serviceName,
             CancellationToken cancellationToken)
         {
-            string restore = "if [ -f " + ShellQuote(session.BackupPath) + " ]; then " +
-                "cp -p " + ShellQuote(session.BackupPath) + " " + ShellQuote(session.Target.ConfigPath) + "; " +
-                "rm -f " + ShellQuote(session.BackupPath) + "; " + ServiceRestartCommand(serviceName) + "; fi; printf 'SSH_ROLLBACK_APPLIED\\n'";
+            string restore = "test -s " + ShellQuote(session.BackupPath) + " && cp -p " + ShellQuote(session.BackupPath) + " " + ShellQuote(session.Target.ConfigPath) + " && chmod " + session.OriginalMode + " " + ShellQuote(session.Target.ConfigPath) + " && " + ServiceRestartCommand(serviceName) + " && rm -f " + ShellQuote(session.BackupPath) + " && printf 'SSH_ROLLBACK_APPLIED\\n'";
             EnsureSuccess(await RunPrivilegedAsync(executor, info, restore, TimeSpan.FromSeconds(45), cancellationToken), "恢复 SSH 配置");
             if (session.FirewallRuleCreated)
                 await RemoveFirewallRuleAsync(executor, info, session, cancellationToken);
             if (session.SelinuxRuleCreated)
-                await RemoveSelinuxPortAsync(executor, info, session.NewPort, cancellationToken);
+                await RemoveSelinuxPortAsync(executor, info, session.NewPort, session.SelinuxPortType, cancellationToken);
+        }
+
+        private static async Task ExecuteDatabasePortChangeAsync(
+            Server server,
+            string password,
+            PortChangeRequest request,
+            string configPath,
+            string serviceName,
+            Func<string> sudoPasswordProvider,
+            Action<int, string, string> report,
+            CancellationToken cancellationToken)
+        {
+            using (IRemoteExecutor executor = await RemoteExecutorFactory.CreateAsync(server, password, cancellationToken, RemoteTransport.SSH))
+            {
+                PortChangeSession session = new PortChangeSession
+                {
+                    Target = request.Target,
+                    OldPort = request.Target.Port,
+                    NewPort = request.NewPort,
+                    BackupPath = "/tmp/xiaobai-db-port-" + Guid.NewGuid().ToString("N") + ".bak",
+                    FirewallRuleName = "XiaoBai " + request.Target.ServiceType + " " + request.NewPort,
+                    ServiceRestarted = false
+                };
+                try
+                {
+                    report(8, "正在检查 Linux 数据库环境", "确认服务、配置文件和权限");
+                    RemoteSystemInfo info = await executor.GetSystemInfoAsync(cancellationToken);
+                    PrepareSudoPassword(server, info, sudoPasswordProvider, cancellationToken);
+                    if (!info.HasSystemd)
+                        throw new InvalidOperationException("当前 Linux 未检测到 systemd，首期不自动修改数据库服务");
+                    if (!IsSupportedDistribution(info))
+                        throw new InvalidOperationException("当前发行版尚未通过高风险操作验证，仅支持 Ubuntu 22.04/24.04、Debian 12、Rocky Linux 9 和 AlmaLinux 9");
+
+                    report(16, "正在检查数据库新端口", "确认 " + request.NewPort + " 未被其他服务占用");
+                    RemoteCommandResult occupied = await RunPrivilegedAsync(
+                        executor,
+                        info,
+                        "if ss -ltnH 2>/dev/null | awk '{print $4}' | sed 's/.*://' | grep -qx '" + request.NewPort + "'; then printf 'PORT_OCCUPIED\\n'; exit 20; fi; printf 'PORT_AVAILABLE\\n'",
+                        TimeSpan.FromSeconds(20),
+                        cancellationToken);
+                    EnsureSuccess(occupied, "检查 Linux 数据库新端口");
+                    if ((occupied.Output ?? "").IndexOf("PORT_OCCUPIED", StringComparison.OrdinalIgnoreCase) >= 0)
+                        throw new InvalidOperationException("新端口已被 Linux 其他服务占用");
+
+                    report(24, "正在备份数据库配置", configPath);
+                    RemoteCommandResult databaseBackup = await RunPrivilegedAsync(
+                        executor,
+                        info,
+                        "test -f " + ShellQuote(configPath) + " && test ! -e " + ShellQuote(session.BackupPath) + " && mode=$(stat -c '%a' " + ShellQuote(configPath) + ") && umask 077 && cp -p " + ShellQuote(configPath) + " " + ShellQuote(session.BackupPath) + " && chmod 600 " + ShellQuote(session.BackupPath) + " && test -s " + ShellQuote(session.BackupPath) + " && printf 'XIAOBAI_BACKUP_MODE=%s\\n' \"$mode\"",
+                        TimeSpan.FromSeconds(20),
+                        cancellationToken);
+                    EnsureSuccess(databaseBackup, "备份数据库配置");
+                    session.OriginalMode = ReadBackupMode(databaseBackup.Output);
+                    session.BackupCreated = true;
+
+                    report(34, "正在配置 Linux 防火墙", request.ConfigureFirewall ? "创建新端口的可回滚规则" : "检查防火墙状态");
+                    if (request.ConfigureFirewall)
+                    {
+                        string sourceIp = await GetClientSourceIpAsync(executor, cancellationToken);
+                        FirewallResult firewall = await AddFirewallRuleAsync(executor, info, request.NewPort, session.FirewallRuleName, sourceIp, cancellationToken);
+                        session.FirewallBackend = firewall.Backend;
+                        session.FirewallPortSpec = firewall.PortSpec;
+                        session.FirewallSourceIp = sourceIp;
+                        session.FirewallRuleCreated = firewall.Created;
+                    }
+                    else if (!await IsFirewallInactiveAsync(executor, info, cancellationToken))
+                    {
+                        throw new InvalidOperationException("Linux 防火墙处于启用状态；请勾选自动配置防火墙，避免数据库新端口无法访问");
+                    }
+
+                    await EnsureSelinuxPortAsync(executor, info, request.NewPort, session, GetSelinuxPortType(request.Target.ServiceType), cancellationToken);
+
+                    report(44, "正在修改数据库配置", request.Target.ServiceType + " · " + configPath);
+                    string tempPath = "/tmp/xiaobai-db-port-" + Guid.NewGuid().ToString("N") + ".conf";
+                    string command = BuildDatabasePortChangeCommand(request.Target.ServiceType, configPath, tempPath, request.NewPort, serviceName, session.OriginalMode);
+                    RemoteCommandResult changed = await RunPrivilegedAsync(executor, info, command, TimeSpan.FromSeconds(45), cancellationToken);
+                    EnsureSuccess(changed, "修改数据库端口");
+                    session.ServiceRestarted = true;
+
+                    report(72, "正在验证数据库新端口", "等待服务在 " + request.NewPort + " 监听");
+                    if (!await WaitForPortAsync(server.IP, request.NewPort, TimeSpan.FromSeconds(35), cancellationToken))
+                        throw new TimeoutException(request.Target.ServiceType + " 重启后没有在新端口监听");
+
+                    report(90, "正在清理临时资源", "删除本次创建的防火墙规则和配置备份");
+                    if (session.FirewallRuleCreated)
+                    {
+                        await RemoveFirewallRuleAsync(executor, info, session, cancellationToken);
+                        session.FirewallRuleCreated = false;
+                    }
+                    EnsureSuccess(await RunPrivilegedAsync(executor, info, "test -f " + ShellQuote(session.BackupPath) + " && rm -f " + ShellQuote(session.BackupPath) + " && printf 'DB_BACKUP_CLEANED\\n'", TimeSpan.FromSeconds(20), cancellationToken), "清理数据库临时备份");
+                    request.Target.Port = request.NewPort;
+                    report(100, "修改完成", request.Target.ServiceType + " 已切换到 " + request.NewPort);
+                }
+                catch
+                {
+                    report(80, "正在自动回滚数据库端口", "恢复原配置并重启服务");
+                    try
+                    {
+                        RemoteSystemInfo rollbackInfo = await executor.GetSystemInfoAsync(CancellationToken.None);
+                        rollbackInfo.SudoPassword = server.SudoPassword;
+                        EnsureSuccess(await RunPrivilegedAsync(
+                            executor,
+                            rollbackInfo,
+                            "test -s " + ShellQuote(session.BackupPath) + " && cp -p " + ShellQuote(session.BackupPath) + " " + ShellQuote(configPath) + " && chmod " + session.OriginalMode + " " + ShellQuote(configPath) + " && " + ServiceRestartCommand(serviceName) + " && systemctl is-active --quiet " + ShellQuote(serviceName) + " && rm -f " + ShellQuote(session.BackupPath) + " && printf 'DB_ROLLBACK_APPLIED\\n'",
+                            TimeSpan.FromSeconds(45),
+                            CancellationToken.None), "恢复数据库配置");
+                        if (session.FirewallRuleCreated)
+                            await RemoveFirewallRuleAsync(executor, rollbackInfo, session, CancellationToken.None);
+                        if (session.SelinuxRuleCreated)
+                            await RemoveSelinuxPortAsync(executor, rollbackInfo, session.NewPort, session.SelinuxPortType, CancellationToken.None);
+                    }
+                    catch (Exception rollbackError)
+                    {
+                        throw new InvalidOperationException("Linux 数据库端口修改失败，且自动回滚未完成：" + rollbackError.Message);
+                    }
+                    throw;
+                }
+            }
+        }
+
+        private static async Task ExecuteWebPortChangeAsync(
+            Server server,
+            string password,
+            PortChangeRequest request,
+            string configPath,
+            string serviceName,
+            Func<string> sudoPasswordProvider,
+            Action<int, string, string> report,
+            CancellationToken cancellationToken)
+        {
+            using (IRemoteExecutor executor = await RemoteExecutorFactory.CreateAsync(server, password, cancellationToken, RemoteTransport.SSH))
+            {
+                PortChangeSession session = new PortChangeSession
+                {
+                    Target = request.Target,
+                    OldPort = request.Target.Port,
+                    NewPort = request.NewPort,
+                    BackupPath = "/tmp/xiaobai-web-port-" + Guid.NewGuid().ToString("N") + ".bak",
+                    FirewallRuleName = "XiaoBai " + request.Target.ServiceType + " " + request.NewPort,
+                    ServiceRestarted = false
+                };
+                try
+                {
+                    if (!request.ConfirmWebConfiguration)
+                        throw new InvalidOperationException("HTTP/HTTPS 修改前必须确认服务器实际配置端口");
+                    report(8, "正在检查 Linux Web 环境", "确认配置文件、服务和权限");
+                    RemoteSystemInfo info = await executor.GetSystemInfoAsync(cancellationToken);
+                    PrepareSudoPassword(server, info, sudoPasswordProvider, cancellationToken);
+                    if (!info.HasSystemd)
+                        throw new InvalidOperationException("当前 Linux 未检测到 systemd，首期不自动修改 Web 服务");
+                    if (!IsSupportedDistribution(info))
+                        throw new InvalidOperationException("当前发行版尚未通过高风险操作验证，仅支持 Ubuntu 22.04/24.04、Debian 12、Rocky Linux 9 和 AlmaLinux 9");
+
+                    report(16, "正在检查 Web 新端口", "确认 " + request.NewPort + " 未被占用");
+                    RemoteCommandResult occupied = await RunPrivilegedAsync(
+                        executor,
+                        info,
+                        "if ss -ltnH 2>/dev/null | awk '{print $4}' | sed 's/.*://' | grep -qx '" + request.NewPort + "'; then printf 'PORT_OCCUPIED\\n'; exit 20; fi; printf 'PORT_AVAILABLE\\n'",
+                        TimeSpan.FromSeconds(20),
+                        cancellationToken);
+                    EnsureSuccess(occupied, "检查 Linux Web 新端口");
+                    if ((occupied.Output ?? "").IndexOf("PORT_OCCUPIED", StringComparison.OrdinalIgnoreCase) >= 0)
+                        throw new InvalidOperationException("新端口已被 Linux 其他服务占用");
+
+                    report(24, "正在备份 Web 配置", configPath);
+                    RemoteCommandResult backup = await RunPrivilegedAsync(
+                        executor,
+                        info,
+                        "test -f " + ShellQuote(configPath) + " && test ! -e " + ShellQuote(session.BackupPath) + " && mode=$(stat -c '%a' " + ShellQuote(configPath) + ") && umask 077 && cp -p " + ShellQuote(configPath) + " " + ShellQuote(session.BackupPath) + " && chmod 600 " + ShellQuote(session.BackupPath) + " && test -s " + ShellQuote(session.BackupPath) + " && printf 'XIAOBAI_BACKUP_MODE=%s\\n' \"$mode\"",
+                        TimeSpan.FromSeconds(20),
+                        cancellationToken);
+                    EnsureSuccess(backup, "备份 Web 配置");
+                    session.OriginalMode = ReadBackupMode(backup.Output);
+                    session.BackupCreated = true;
+
+                    report(36, "正在配置 Linux 防火墙", request.ConfigureFirewall ? "创建新端口的可回滚规则" : "检查防火墙状态");
+                    if (request.ConfigureFirewall)
+                    {
+                        string sourceIp = await GetClientSourceIpAsync(executor, cancellationToken);
+                        FirewallResult firewall = await AddFirewallRuleAsync(executor, info, request.NewPort, session.FirewallRuleName, sourceIp, cancellationToken);
+                        session.FirewallBackend = firewall.Backend;
+                        session.FirewallPortSpec = firewall.PortSpec;
+                        session.FirewallSourceIp = sourceIp;
+                        session.FirewallRuleCreated = firewall.Created;
+                    }
+                    else if (!await IsFirewallInactiveAsync(executor, info, cancellationToken))
+                    {
+                        throw new InvalidOperationException("Linux 防火墙处于启用状态；请勾选自动配置防火墙，避免 Web 新端口无法访问");
+                    }
+
+                    report(48, "正在修改 Web 配置", request.Target.DisplayName + " · " + configPath);
+                    string tempPath = configPath + ".xiaobai-" + Guid.NewGuid().ToString("N");
+                    string command = BuildWebPortChangeCommand(request.Target.ServiceType, serviceName, configPath, tempPath, request.Target.Port, request.NewPort, session.OriginalMode);
+                    EnsureSuccess(await RunPrivilegedAsync(executor, info, command, TimeSpan.FromSeconds(60), cancellationToken), "修改 Linux Web 端口");
+                    session.ServiceRestarted = true;
+
+                    report(74, "正在验证 Web 新端口", "等待服务在 " + request.NewPort + " 监听");
+                    if (!await WaitForPortAsync(server.IP, request.NewPort, TimeSpan.FromSeconds(35), cancellationToken))
+                        throw new TimeoutException(request.Target.DisplayName + " 重载后没有在新端口监听");
+
+                    if (session.FirewallRuleCreated)
+                    {
+                        await RemoveFirewallRuleAsync(executor, info, session, cancellationToken);
+                        session.FirewallRuleCreated = false;
+                    }
+                    EnsureSuccess(await RunPrivilegedAsync(executor, info, "test -f " + ShellQuote(session.BackupPath) + " && rm -f " + ShellQuote(session.BackupPath) + " && printf 'WEB_BACKUP_CLEANED\\n'", TimeSpan.FromSeconds(20), cancellationToken), "清理 Web 临时备份");
+                    request.Target.Port = request.NewPort;
+                    report(100, "修改完成", request.Target.DisplayName + " 已切换到 " + request.NewPort);
+                }
+                catch
+                {
+                    report(82, "正在自动回滚 Web 端口", "恢复原配置并重载服务");
+                    if (session.BackupCreated)
+                    {
+                        try
+                        {
+                            RemoteSystemInfo rollbackInfo = await executor.GetSystemInfoAsync(CancellationToken.None);
+                            rollbackInfo.SudoPassword = server.SudoPassword;
+                            EnsureSuccess(await RunPrivilegedAsync(executor, rollbackInfo,
+                                "test -s " + ShellQuote(session.BackupPath) + " && cp -p " + ShellQuote(session.BackupPath) + " " + ShellQuote(configPath) + " && chmod " + session.OriginalMode + " " + ShellQuote(configPath) + " && systemctl restart " + ShellQuote(serviceName) + " && systemctl is-active --quiet " + ShellQuote(serviceName) + " && rm -f " + ShellQuote(session.BackupPath) + " && printf 'WEB_ROLLBACK_APPLIED\\n'",
+                                TimeSpan.FromSeconds(60),
+                                CancellationToken.None), "恢复 Web 配置");
+                            if (session.FirewallRuleCreated)
+                                await RemoveFirewallRuleAsync(executor, rollbackInfo, session, CancellationToken.None);
+                        }
+                        catch (Exception rollbackError)
+                        {
+                            throw new InvalidOperationException("Linux Web 端口修改失败，且自动回滚未完成：" + rollbackError.Message);
+                        }
+                    }
+                    else if (session.FirewallRuleCreated)
+                    {
+                        RemoteSystemInfo cleanupInfo = await executor.GetSystemInfoAsync(CancellationToken.None);
+                        await RemoveFirewallRuleAsync(executor, cleanupInfo, session, CancellationToken.None);
+                    }
+                    throw;
+                }
+            }
+        }
+
+        private static void PrepareSudoPassword(
+            Server server,
+            RemoteSystemInfo info,
+            Func<string> provider,
+            CancellationToken cancellationToken)
+        {
+            if (info.IsRoot || info.CanSudo)
+                return;
+            if (!info.HasSudo)
+                throw new InvalidOperationException("当前 Linux 账号没有可用的 sudo");
+            server.SudoPassword = provider == null ? null : provider();
+            if (string.IsNullOrEmpty(server.SudoPassword))
+                throw new InvalidOperationException("未提供 sudo 密码，已停止修改");
+            info.SudoPassword = server.SudoPassword;
+        }
+
+        private static string BuildDatabasePortChangeCommand(string type, string configPath, string tempPath, int newPort, string serviceName, string originalMode)
+        {
+            string config = ShellQuote(configPath);
+            string temp = ShellQuote(tempPath);
+            string content;
+            if (type == "MySQL" || type == "MariaDB")
+            {
+                content = "awk -v new='" + newPort + "' 'BEGIN{section=0; changed=0} /^[[:space:]]*\\[/{section=(tolower($0) ~ /^[[:space:]]*\\[mysqld\\]/)} section && /^[[:space:]]*port[[:space:]]*=/{sub(/[0-9]+[[:space:]]*$/,new); changed=1} {print} END{if(!changed) print \"[mysqld]\\nport=\" new}' " + config + " > " + temp;
+            }
+            else if (type == "MongoDB")
+            {
+                content = "awk -v new='" + newPort + "' 'BEGIN{changed=0} /^[[:space:]]*port[[:space:]]*:/ {sub(/[0-9]+[[:space:]]*$/,new); changed=1} {print} END{if(!changed) print \"net:\\n  port: \" new}' " + config + " > " + temp;
+            }
+            else if (type == "Redis")
+            {
+                content = "awk -v new='" + newPort + "' 'BEGIN{changed=0} !/^[[:space:]]*#/ && /^[[:space:]]*port[[:space:]]+[0-9]+[[:space:]]*$/ {sub(/[0-9]+[[:space:]]*$/,new); changed=1} {print} END{if(!changed) print \"port \" new}' " + config + " > " + temp;
+            }
+            else
+            {
+                throw new InvalidOperationException("Linux 暂不支持该数据库类型的端口修改");
+            }
+            if (!Regex.IsMatch(originalMode ?? "", @"^[0-7]{3,4}$"))
+                throw new InvalidOperationException("数据库配置文件原权限无效，已停止修改");
+            return content + " && test -s " + temp + " && mv " + temp + " " + config + " && chmod " + originalMode + " " + config + " && " +
+                "systemctl restart " + ShellQuote(serviceName) + " && systemctl is-active --quiet " + ShellQuote(serviceName) + " && printf 'DB_PORT_CHANGE_APPLIED\\n' || { rm -f " + temp + "; exit 30; }";
+        }
+
+        private static string BuildWebPortChangeCommand(string type, string serviceName, string configPath, string tempPath, int oldPort, int newPort, string originalMode)
+        {
+            string config = ShellQuote(configPath);
+            string temp = ShellQuote(tempPath);
+            if (!Regex.IsMatch(originalMode ?? "", @"^[0-7]{3,4}$"))
+                throw new InvalidOperationException("Web 配置文件原权限无效，已停止修改");
+            string command;
+            if (serviceName == "nginx")
+            {
+                command = "sed -E 's/^([[:space:]]*listen[[:space:]]+)" + oldPort + "([[:space:];].*)$/\\1" + newPort + "\\2/' " + config + " > " + temp + "; " +
+                    "grep -Eiq '^[[:space:]]*listen[[:space:]]+" + newPort + "([[:space:];]|$)' " + temp + " && nginx -t";
+            }
+            else if (serviceName == "apache2" || serviceName == "httpd")
+            {
+                command = "sed -E -e 's/^([[:space:]]*Listen[[:space:]]+)" + oldPort + "([[:space:]].*)?$/\\1" + newPort + "\\2/' -e 's/(<VirtualHost[[:space:]]+\\*:)" + oldPort + "(>)/\\1" + newPort + "\\2/' " + config + " > " + temp + "; " +
+                    "grep -Eiq '^[[:space:]]*Listen[[:space:]]+" + newPort + "([[:space:]]|$)' " + temp + " && (command -v apachectl >/dev/null 2>&1 && apachectl -t || httpd -t)";
+            }
+            else
+            {
+                throw new InvalidOperationException("Linux 暂不支持该 Web 服务的端口修改");
+            }
+            return command + " && test -s " + temp + " && mv " + temp + " " + config + " && chmod " + originalMode + " " + config + " && systemctl reload " + ShellQuote(serviceName) + " && systemctl is-active --quiet " + ShellQuote(serviceName) + " && printf 'WEB_PORT_CHANGE_APPLIED\\n' || { rm -f " + temp + "; exit 30; }";
         }
 
         private static string BuildDualListenCommand(string configPath, string backupPath, int oldPort, int newPort, string serviceName)
@@ -354,12 +698,63 @@ namespace RDPManager
                     ConfigPath = fields[3],
                     Protocol = "TCP",
                     Port = port,
-                    IsSupported = false,
+                    IsSupported = (type == "MySQL" || type == "MariaDB" || type == "MongoDB" || type == "Redis") && SafeConfigPath.IsMatch(fields[3]),
                     TargetKey = fields[3] + "|" + service,
                     ServiceStatus = fields[5]
                 });
             }
             return services;
+        }
+
+        private static async Task<IList<DetectedServicePort>> DetectWebTargetsAsync(
+            IRemoteExecutor executor,
+            CancellationToken cancellationToken)
+        {
+            const string command =
+                "for svc in nginx apache2 httpd; do " +
+                "if systemctl cat \"$svc.service\" >/dev/null 2>&1; then " +
+                "state=$(systemctl is-active \"$svc\" 2>/dev/null); [ -n \"$state\" ] || state=unknown; " +
+                "if [ \"$svc\" = nginx ]; then files=\"/etc/nginx/nginx.conf /etc/nginx/sites-enabled/default /etc/nginx/conf.d/default.conf\"; " +
+                "else files=\"/etc/apache2/ports.conf /etc/httpd/conf/httpd.conf\"; fi; " +
+                "for f in $files; do if [ -f \"$f\" ]; then " +
+                "if [ \"$svc\" = nginx ]; then ports=$(grep -hE '^[[:space:]]*listen[[:space:]]+[0-9]+' \"$f\" 2>/dev/null | sed -E 's/^[[:space:]]*listen[[:space:]]+([0-9]+).*/\\1/' | sort -n -u); " +
+                "else ports=$(grep -hE '^[[:space:]]*Listen[[:space:]]+[0-9]+' \"$f\" 2>/dev/null | sed -E 's/^[[:space:]]*Listen[[:space:]]+([0-9]+).*/\\1/' | sort -n -u); fi; " +
+                "for p in $ports; do type=HTTP; [ \"$p\" = 443 ] && type=HTTPS; printf 'XIAOBAI_WEB|%s|%s|%s|%s|%s\\n' \"$type\" \"$svc\" \"$f\" \"$p\" \"$state\"; done; " +
+                "fi; done; fi; done";
+            RemoteCommandResult result = await executor.ExecuteCommandAsync(command, TimeSpan.FromSeconds(30), cancellationToken);
+            EnsureSuccess(result, "识别 Linux Web 服务");
+            List<DetectedServicePort> services = new List<DetectedServicePort>();
+            HashSet<string> seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (string line in (result.Output ?? "").Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries))
+            {
+                string[] fields = line.Split(new[] { '|' }, 6);
+                if (fields.Length != 6 || fields[0] != "XIAOBAI_WEB")
+                    continue;
+                int port;
+                if (!int.TryParse(fields[4], NumberStyles.Integer, CultureInfo.InvariantCulture, out port) || port < 1 || port > 65535)
+                    continue;
+                string key = fields[1] + "|" + fields[2] + "|" + port;
+                if (!seen.Add(key))
+                    continue;
+                services.Add(new DetectedServicePort
+                {
+                    ServiceType = fields[1],
+                    DisplayName = fields[1] + " · " + fields[2],
+                    ServiceName = fields[2],
+                    ConfigPath = fields[3],
+                    Protocol = "TCP",
+                    Port = port,
+                    IsSupported = true,
+                    TargetKey = fields[3] + "|" + fields[2],
+                    ServiceStatus = fields[5]
+                });
+            }
+            return services;
+        }
+
+        private static bool IsDatabaseType(string type)
+        {
+            return type == "MySQL" || type == "MariaDB" || type == "MongoDB" || type == "Redis";
         }
 
         private static async Task<FirewallResult> AddFirewallRuleAsync(IRemoteExecutor executor, RemoteSystemInfo info, int port, string ruleName, string sourceIp, CancellationToken cancellationToken)
@@ -412,8 +807,11 @@ namespace RDPManager
             RemoteSystemInfo info,
             int port,
             PortChangeSession session,
+            string portType,
             CancellationToken cancellationToken)
         {
+            if (string.IsNullOrWhiteSpace(portType))
+                return;
             RemoteCommandResult state = await RunPrivilegedAsync(
                 executor,
                 info,
@@ -428,11 +826,12 @@ namespace RDPManager
                 executor,
                 info,
                 "if ! command -v semanage >/dev/null 2>&1; then printf 'XIAOBAI_SELINUX=missing-semanage\\n'; exit 40; fi; " +
-                "if semanage port -l 2>/dev/null | awk '$1==\"ssh_port_t\" && $2==\"tcp\" {for(i=3;i<=NF;i++) print $i}' | tr ',' '\\n' | grep -qx '" + port + "'; then printf 'XIAOBAI_SELINUX=existing\\n'; " +
-                "else semanage port -a -t ssh_port_t -p tcp " + port + " && printf 'XIAOBAI_SELINUX=created\\n'; fi",
+                "if semanage port -l 2>/dev/null | awk '$1==\"" + portType + "\" && $2==\"tcp\" {for(i=3;i<=NF;i++) print $i}' | tr ',' '\\n' | grep -qx '" + port + "'; then printf 'XIAOBAI_SELINUX=existing\\n'; " +
+                "else semanage port -a -t " + portType + " -p tcp " + port + " && printf 'XIAOBAI_SELINUX=created\\n'; fi",
                 TimeSpan.FromSeconds(30),
                 cancellationToken);
             EnsureSuccess(configure, "配置 SELinux SSH 端口");
+            session.SelinuxPortType = portType;
             session.SelinuxRuleCreated = GetValue(ParseFields(configure.Output), "SELINUX") == "created";
         }
 
@@ -440,15 +839,29 @@ namespace RDPManager
             IRemoteExecutor executor,
             RemoteSystemInfo info,
             int port,
+            string portType,
             CancellationToken cancellationToken)
         {
+            if (string.IsNullOrWhiteSpace(portType))
+                return;
             RemoteCommandResult result = await RunPrivilegedAsync(
                 executor,
                 info,
-                "if command -v semanage >/dev/null 2>&1; then semanage port -d -t ssh_port_t -p tcp " + port + " >/dev/null 2>&1 || true; fi; printf 'XIAOBAI_SELINUX_REMOVED\\n'",
+                "if command -v semanage >/dev/null 2>&1; then semanage port -d -t " + portType + " -p tcp " + port + " >/dev/null 2>&1 || true; fi; printf 'XIAOBAI_SELINUX_REMOVED\\n'",
                 TimeSpan.FromSeconds(30),
                 cancellationToken);
             EnsureSuccess(result, "回滚 SELinux SSH 端口");
+        }
+
+        private static string GetSelinuxPortType(string databaseType)
+        {
+            if (databaseType == "MySQL" || databaseType == "MariaDB")
+                return "mysqld_port_t";
+            if (databaseType == "MongoDB")
+                return "mongod_port_t";
+            if (databaseType == "Redis")
+                return "redis_port_t";
+            return "";
         }
 
         private static bool IsSupportedDistribution(RemoteSystemInfo info)
@@ -520,6 +933,14 @@ namespace RDPManager
         private static string ShellQuote(string value)
         {
             return "'" + (value ?? "").Replace("'", "'\\''") + "'";
+        }
+
+        private static string ReadBackupMode(string output)
+        {
+            string mode = ParseFields(output).TryGetValue("BACKUP_MODE", out string value) ? value : "";
+            if (!Regex.IsMatch(mode, @"^[0-7]{3,4}$"))
+                throw new InvalidOperationException("未能读取原配置文件权限，已停止修改");
+            return mode;
         }
 
         private static Dictionary<string, string> ParseFields(string output)
