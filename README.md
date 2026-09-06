@@ -30,3 +30,11 @@ dotnet build RDPManager.sln -c Release
 - 数据库管理通过 SSH 隧道完成。
 - 当前不提供一键卸载数据库、删除数据库目录或删除数据库数据的功能。
 - Oracle 相关入口暂保留，数据库管理和一键部署尚未实现。
+
+## Linux SSH 终端
+
+Linux 服务器的“连接”功能使用程序内置的 SSH.NET 交互会话和 xterm.js 终端，不调用 CMD、Windows `ssh.exe` 或 PuTTY。终端窗口标题只显示管理器中保存的服务器名称和连接状态。
+
+终端界面会隐藏目标服务器 IP、SSH 端口以及连接字符串；远程输出进入终端前也会过滤当前目标 IP 和 SSH 端口。终端内容只保留在当前会话中，不写入管理器日志，也不通过剪贴板传递服务器密码。服务器本身的 SSH 审计日志仍由 Linux 系统按其安全策略记录。
+
+内嵌终端使用 WebView2 承载 xterm.js。Windows 10/11 通常已经安装 WebView2 Runtime；若目标电脑没有，需要先安装对应运行时。

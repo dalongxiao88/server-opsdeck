@@ -28,6 +28,7 @@ work/
 *.tmp
 *.bak
 *.log
+*.WebView2/
 
 # IDE/user-specific files
 .vs/

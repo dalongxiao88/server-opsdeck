@@ -977,64 +977,14 @@ namespace RDPManager
         {
             try
             {
-                string putty = FindPutty();
-                if (server.SshCredentialMode == SshCredentialMode.PrivateKey &&
-                    !string.Equals(Path.GetExtension(server.SshPrivateKeyPath), ".ppk", StringComparison.OrdinalIgnoreCase))
-                    putty = null;
-                if (!string.IsNullOrEmpty(putty))
-                {
-                    ProcessStartInfo start = new ProcessStartInfo(putty) { UseShellExecute = false };
-                    start.ArgumentList.Add("-ssh");
-                    start.ArgumentList.Add(server.Username + "@" + server.IP);
-                    start.ArgumentList.Add("-P");
-                    start.ArgumentList.Add(server.Port);
-                    if (server.SshCredentialMode == SshCredentialMode.PrivateKey && !string.IsNullOrWhiteSpace(server.SshPrivateKeyPath))
-                    {
-                        start.ArgumentList.Add("-i");
-                        start.ArgumentList.Add(server.SshPrivateKeyPath);
-                    }
-                    else if (!string.IsNullOrEmpty(password))
-                    {
-                        start.ArgumentList.Add("-pw");
-                        start.ArgumentList.Add(password);
-                    }
-                    Process.Start(start);
-                    return;
-                }
-
-                ProcessStartInfo nativeSsh = new ProcessStartInfo("cmd.exe") { UseShellExecute = true };
-                nativeSsh.ArgumentList.Add("/K");
-                nativeSsh.ArgumentList.Add("ssh");
-                nativeSsh.ArgumentList.Add("-p");
-                nativeSsh.ArgumentList.Add(server.Port);
-                if (server.SshCredentialMode == SshCredentialMode.PrivateKey && !string.IsNullOrWhiteSpace(server.SshPrivateKeyPath))
-                {
-                    nativeSsh.ArgumentList.Add("-i");
-                    nativeSsh.ArgumentList.Add(server.SshPrivateKeyPath);
-                }
-                nativeSsh.ArgumentList.Add(server.Username + "@" + server.IP);
-                Process.Start(nativeSsh);
-                if (server.SshCredentialMode != SshCredentialMode.PrivateKey && !string.IsNullOrEmpty(password))
-                    Clipboard.SetText(password);
-                statusBarLabel.Text = server.SshCredentialMode == SshCredentialMode.PrivateKey
-                    ? "SSH 已启动，正在使用私钥认证"
-                    : "SSH 已启动，服务器密码已复制到剪贴板";
+                SshTerminalForm terminal = new SshTerminalForm(server, password);
+                terminal.Show(this);
+                statusBarLabel.Text = "已打开内嵌 SSH 终端";
             }
             catch (Exception ex)
             {
                 MessageBox.Show("SSH 连接失败：" + ex.Message, "连接失败", MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
-        }
-
-        private static string FindPutty()
-        {
-            string[] paths =
-            {
-                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "PuTTY", "putty.exe"),
-                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86), "PuTTY", "putty.exe"),
-                Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "putty.exe")
-            };
-            return paths.FirstOrDefault(File.Exists);
         }
 
         private void BtnShowIP_Click(object sender, EventArgs e)
@@ -1234,30 +1184,53 @@ namespace RDPManager
             operationRunning = true;
             try
             {
-                PortInspectionResult inspection;
-                using (OperationProgressForm discovery = new OperationProgressForm(
-                    "发现远程服务",
-                    string.Format("{0}   ·   {1}", server.Name, server.GetMaskedIP()),
-                     new[] { "连接远程管理通道", "识别 SSH / RDP", "识别可管理服务" }))
+                PortInspectionResult inspection = null;
+                bool passwordChanged = false;
+                for (int attempt = 0; attempt < 2 && inspection == null; attempt++)
                 {
                     PortInspectionResult captured = null;
-                    discovery.Operation = async (window, token) =>
+                    bool retryWithNewPassword = false;
+                    using (OperationProgressForm discovery = new OperationProgressForm(
+                        "发现远程服务",
+                        string.Format("{0}   ·   {1}", server.Name, server.GetMaskedIP()),
+                         new[] { "连接远程管理通道", "识别 SSH / RDP", "识别可管理服务" }))
                     {
-                        window.SetStep(0, OperationStepState.Running);
-                        window.SetProgress("正在连接服务器", server.Type == ServerType.Linux ? "通过 SSH 读取 Linux 服务" : "SSH 优先，失败时回退 WinRM", 10, Blue, true);
-                        captured = server.Type == ServerType.Linux
-                            ? await new LinuxPortManagementService().InspectAsync(server, password, token)
-                            : await new PortManagementService().InspectAsync(server, password, token);
-                        window.SetStep(0, OperationStepState.Completed, captured.Transport);
-                        window.SetStep(1, OperationStepState.Completed, captured.Services.Count(item => item.ServiceType == "RDP" || item.ServiceType == "SSH") + " 项");
-                        window.SetStep(2, OperationStepState.Completed, captured.Services.Count(item => item.ServiceType != "RDP" && item.ServiceType != "SSH") + " 项");
-                        window.MarkSuccess("已发现 " + captured.Services.Count + " 个可管理服务");
-                    };
-                    discovery.ShowDialog(this);
-                    inspection = captured;
+                        discovery.Operation = async (window, token) =>
+                        {
+                            window.SetStep(0, OperationStepState.Running);
+                            window.SetProgress("正在连接服务器", server.Type == ServerType.Linux ? "通过 SSH 读取 Linux 服务" : "SSH 优先，失败时回退 WinRM", 10, Blue, true);
+                            captured = server.Type == ServerType.Linux
+                                ? await new LinuxPortManagementService().InspectAsync(server, password, token)
+                                : await new PortManagementService().InspectAsync(server, password, token);
+                            window.SetStep(0, OperationStepState.Completed, captured.Transport);
+                            window.SetStep(1, OperationStepState.Completed, captured.Services.Count(item => item.ServiceType == "RDP" || item.ServiceType == "SSH") + " 项");
+                            window.SetStep(2, OperationStepState.Completed, captured.Services.Count(item => item.ServiceType != "RDP" && item.ServiceType != "SSH") + " 项");
+                            window.MarkSuccess("已发现 " + captured.Services.Count + " 个可管理服务");
+                        };
+                        discovery.ShowDialog(this);
+                        if (discovery.Succeeded)
+                            inspection = captured;
+
+                        if (inspection == null && attempt == 0 &&
+                            server.Type == ServerType.Linux &&
+                            server.SshCredentialMode == SshCredentialMode.Password &&
+                            IsSshPasswordAuthenticationFailure(discovery.FailureMessage))
+                        {
+                            if (!PromptForUpdatedServerPassword(server, ref password))
+                                return;
+                            passwordChanged = true;
+                            retryWithNewPassword = true;
+                        }
+                    }
+
+                    if (inspection == null && !retryWithNewPassword)
+                        return;
                 }
 
                 if (inspection == null)
+                    return;
+
+                if (passwordChanged && !SaveValidatedServerPassword(server, password))
                     return;
 
                 if (server.Type == ServerType.Linux)
@@ -1740,6 +1713,42 @@ namespace RDPManager
             if (string.IsNullOrWhiteSpace(message))
                 return "未知错误";
             return RemoteErrorFormatter.Format(message, "");
+        }
+
+        private static bool IsSshPasswordAuthenticationFailure(string message)
+        {
+            if (string.IsNullOrWhiteSpace(message))
+                return false;
+            return message.IndexOf("SSH 密码认证失败", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                message.IndexOf("Permission denied (password)", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                message.IndexOf("Authentication failed", StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
+        private bool PromptForUpdatedServerPassword(Server server, ref string password)
+        {
+            using (PasswordForm form = new PasswordForm("SSH 密码认证失败，请重新输入：" + server.Name))
+            {
+                if (form.ShowDialog(this) != DialogResult.OK || string.IsNullOrEmpty(form.Password))
+                    return false;
+                password = form.Password;
+                return true;
+            }
+        }
+
+        private bool SaveValidatedServerPassword(Server server, string password)
+        {
+            string previous = server.Password;
+            server.Password = password;
+            if (SaveServerData())
+            {
+                statusBarLabel.Text = storageMode == StorageMode.EncryptedVault
+                    ? "SSH 密码验证成功，已更新加密保险库"
+                    : "SSH 密码验证成功，已更新 servers.xml";
+                return true;
+            }
+
+            server.Password = previous;
+            return false;
         }
 
         private string PromptLinuxSudoPassword(Server server, IWin32Window owner)

@@ -419,7 +419,7 @@ namespace RDPManager
                     sshError = ex;
                     ssh.Dispose();
                     if (preferredTransport == RemoteTransport.SSH || server.ManagementType == RemoteManagementType.SSH || server.Type == ServerType.Linux)
-                        throw new InvalidOperationException("SSH 连接失败，请检查管理端口、用户名和密码：" + RemoteErrorFormatter.Format(ex.Message, ""));
+                        throw new InvalidOperationException(FormatSshConnectionError(server, ex));
                 }
             }
 
@@ -440,6 +440,18 @@ namespace RDPManager
             }
 
             throw new InvalidOperationException("没有可用的远程管理通道");
+        }
+
+        private static string FormatSshConnectionError(Server server, Exception error)
+        {
+            if (error is Renci.SshNet.Common.SshAuthenticationException)
+            {
+                if (server != null && server.Type == ServerType.Linux && server.SshCredentialMode == SshCredentialMode.PrivateKey)
+                    return "SSH 私钥认证失败：服务器拒绝当前私钥或私钥口令，请检查用户名、私钥文件和口令";
+                return "SSH 密码认证失败：服务器已接受连接，但拒绝了当前用户名或密码；请检查登录策略或重新输入密码";
+            }
+
+            return "SSH 连接失败，请检查管理端口、用户名和密码：" + RemoteErrorFormatter.Format(error == null ? "" : error.Message, "");
         }
 
         public static int GetManagementPort(Server server, RemoteTransport transport)

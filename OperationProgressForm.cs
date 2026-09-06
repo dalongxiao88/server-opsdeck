@@ -39,6 +39,8 @@ namespace RDPManager
         private CancellationTokenSource cancellation;
 
         public Func<OperationProgressForm, CancellationToken, Task> Operation { get; set; }
+        public bool Succeeded { get; private set; }
+        public string FailureMessage { get; private set; }
 
         public OperationProgressForm(string title, string target, IEnumerable<string> steps)
         {
@@ -186,6 +188,8 @@ namespace RDPManager
         {
             running = false;
             finished = true;
+            Succeeded = true;
+            FailureMessage = null;
             titleLabel.Text = "操作完成";
             detailLabel.Text = detail;
             stateDot.ForeColor = Green;
@@ -203,6 +207,8 @@ namespace RDPManager
         {
             running = false;
             finished = true;
+            Succeeded = false;
+            FailureMessage = detail;
             titleLabel.Text = "操作失败";
             detailLabel.Text = detail;
             stateDot.ForeColor = Red;

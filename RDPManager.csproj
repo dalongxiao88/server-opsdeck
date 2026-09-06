@@ -4,6 +4,7 @@
     <TargetFramework>net8.0-windows</TargetFramework>
     <UseWindowsForms>true</UseWindowsForms>
     <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <NoWarn>$(NoWarn);MSB3277</NoWarn>
     <ImplicitUsings>disable</ImplicitUsings>
     <Nullable>disable</Nullable>
     <RootNamespace>RDPManager</RootNamespace>
@@ -17,7 +18,13 @@
       <LogicalName>RDPManager.favicon.ico</LogicalName>
     </EmbeddedResource>
     <PackageReference Include="SSH.NET" Version="2026.0.0" />
+    <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.4191.47" />
     <PackageReference Include="MySqlConnector" Version="2.4.0" />
     <PackageReference Include="MongoDB.Driver" Version="3.11.1" />
+    <EmbeddedResource Include="TerminalAssets\xterm.js" LogicalName="RDPManager.TerminalAssets.xterm.js" />
+    <EmbeddedResource Include="TerminalAssets\xterm.css" LogicalName="RDPManager.TerminalAssets.xterm.css" />
+    <EmbeddedResource Include="TerminalAssets\xterm-addon-fit.js" LogicalName="RDPManager.TerminalAssets.xterm-addon-fit.js" />
+    <EmbeddedResource Include="TerminalAssets\xterm-LICENSE.txt" LogicalName="RDPManager.TerminalAssets.xterm-LICENSE.txt" />
+    <EmbeddedResource Include="TerminalAssets\xterm-addon-fit-LICENSE.txt" LogicalName="RDPManager.TerminalAssets.xterm-addon-fit-LICENSE.txt" />
   </ItemGroup>
 </Project>

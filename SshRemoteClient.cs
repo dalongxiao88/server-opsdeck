@@ -87,6 +87,22 @@ namespace RDPManager
             }, cancellationToken);
         }
 
+        public ShellStream CreateShellStream(uint columns, uint rows)
+        {
+            if (!client.IsConnected)
+                throw new InvalidOperationException("SSH 连接已断开");
+            if (columns < 2 || rows < 1)
+                throw new ArgumentOutOfRangeException();
+
+            return client.CreateShellStream(
+                "xterm-256color",
+                columns,
+                rows,
+                columns * 8,
+                rows * 16,
+                8192);
+        }
+
         public Task<SshCommandResult> ExecuteAsync(string command, TimeSpan timeout, CancellationToken cancellationToken)
         {
             return Task.Run(() =>

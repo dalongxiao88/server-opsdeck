@@ -59,7 +59,7 @@ namespace RDPManager
                     IsOnline = true,
                     IsServiceAvailable = true,
                     LatencyMilliseconds = tcpLatency,
-                    DisplayText = string.Format("{0} {1} ms", protocol, tcpLatency.Value),
+                    DisplayText = string.Format("{0} TCP {1} ms", protocol, tcpLatency.Value),
                     DetailText = pingLatency.HasValue
                         ? string.Format("服务端口正常，Ping {0} ms", pingLatency.Value)
                         : "服务端口正常，服务器未响应 Ping",
