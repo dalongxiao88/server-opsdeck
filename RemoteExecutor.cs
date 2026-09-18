@@ -141,7 +141,7 @@ namespace RDPManager
                 "[pscustomobject]@{ HostName=$env:COMPUTERNAME; " +
                 "UserName=[Security.Principal.WindowsIdentity]::GetCurrent().Name; " +
                 "LastBootUpTime=$os.LastBootUpTime.ToUniversalTime().ToString('o') } | ConvertTo-Json -Compress";
-            RemoteCommandResult result = await ExecutePowerShellAsync(script, TimeSpan.FromSeconds(25), cancellationToken);
+            RemoteCommandResult result = await ExecutePowerShellAsync(script, TimeSpan.FromSeconds(90), cancellationToken);
             EnsureSuccess(result, "SSH 远程权限验证");
             Dictionary<string, object> values = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, object>>(result.Output.Trim());
             DateTime bootTime;
@@ -187,7 +187,7 @@ namespace RDPManager
                 "printf 'XIAOBAI_FIREWALL=%s\\n' \"$FIREWALL\"; " +
                 "printf 'XIAOBAI_SSH_PORT=%s\\n' \"$SSH_PORT\"";
 
-            RemoteCommandResult result = await ExecuteCommandAsync(command, TimeSpan.FromSeconds(25), cancellationToken);
+            RemoteCommandResult result = await ExecuteCommandAsync(command, TimeSpan.FromSeconds(90), cancellationToken);
             EnsureSuccess(result, "读取 Linux 系统信息");
             Dictionary<string, string> values = ParseLinuxFields(result.Output);
             long bootEpoch;

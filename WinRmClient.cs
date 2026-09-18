@@ -42,6 +42,7 @@ namespace RDPManager
         {
 const string script = @"
 $ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
 $OutputEncoding = [Text.Encoding]::UTF8
 [Console]::OutputEncoding = [Text.Encoding]::UTF8
 $passwordBytes = [Convert]::FromBase64String([Console]::In.ReadLine())
@@ -62,7 +63,7 @@ $result = Invoke-Command -ComputerName $env:XIAOBAI_WINRM_HOST -Port $env:XIAOBA
 }
 $result | ConvertTo-Json -Compress
 ";
-            WinRmCommandResult result = await RunPowerShellAsync(script, TimeSpan.FromSeconds(25), cancellationToken);
+            WinRmCommandResult result = await RunPowerShellAsync(script, TimeSpan.FromSeconds(90), cancellationToken);
             EnsureSuccess(result, "WinRM 权限验证");
 
             string json = result.Output == null ? "" : result.Output.Trim();
@@ -83,6 +84,7 @@ $result | ConvertTo-Json -Compress
         {
 const string script = @"
 $ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
 $OutputEncoding = [Text.Encoding]::UTF8
 [Console]::OutputEncoding = [Text.Encoding]::UTF8
 $passwordBytes = [Convert]::FromBase64String([Console]::In.ReadLine())
@@ -100,7 +102,7 @@ Invoke-Command -ComputerName $env:XIAOBAI_WINRM_HOST -Port $env:XIAOBAI_WINRM_PO
     'RESTART_COMMAND_ACCEPTED'
 }
 ";
-            WinRmCommandResult result = await RunPowerShellAsync(script, TimeSpan.FromSeconds(25), cancellationToken);
+            WinRmCommandResult result = await RunPowerShellAsync(script, TimeSpan.FromSeconds(90), cancellationToken);
             EnsureSuccess(result, "发送重启命令");
             if (string.IsNullOrEmpty(result.Output) || result.Output.IndexOf("RESTART_COMMAND_ACCEPTED", StringComparison.OrdinalIgnoreCase) < 0)
                 throw new InvalidOperationException("WinRM 未返回重启命令确认");
@@ -113,6 +115,7 @@ Invoke-Command -ComputerName $env:XIAOBAI_WINRM_HOST -Port $env:XIAOBAI_WINRM_PO
         {
             string script =
                 "$ErrorActionPreference = 'Stop'\n" +
+                "$ProgressPreference = 'SilentlyContinue'\n" +
                 "$OutputEncoding = [Text.Encoding]::UTF8\n" +
                 "[Console]::OutputEncoding = [Text.Encoding]::UTF8\n" +
                 "$passwordBytes = [Convert]::FromBase64String([Console]::In.ReadLine())\n" +

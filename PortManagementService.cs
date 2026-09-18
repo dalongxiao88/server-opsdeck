@@ -494,30 +494,12 @@ namespace RDPManager
             sourceIp = parsedAddress.ToString();
 
             string ruleName = "XiaoBai-Client-" + port + "-" + Guid.NewGuid().ToString("N").Substring(0, 8);
+            // A scoped temporary rule is faster and more reliable than walking every
+            // firewall rule and resolving its port/address filters one at a time.
             string script = @"
 $ErrorActionPreference='Stop'
-$allowed=$false
-foreach($rule in @(Get-NetFirewallRule -Direction Inbound -Action Allow -Enabled True -ErrorAction SilentlyContinue)) {
-    $portFilter=$rule | Get-NetFirewallPortFilter
-    if($null -eq $portFilter) { continue }
-    $protocol=[string]$portFilter.Protocol
-    if($protocol -ne 'TCP' -and $protocol -ne 'Any') { continue }
-    $local=[string]$portFilter.LocalPort
-    $portMatch=$local -eq 'Any'
-    if(-not $portMatch) {
-        foreach($part in ($local -split ',')) { if($part.Trim() -eq __PORT__) { $portMatch=$true } }
-    }
-    if(-not $portMatch) { continue }
-    $addressFilter=$rule | Get-NetFirewallAddressFilter
-    $remote=@($addressFilter.RemoteAddress)
-    if($remote.Count -eq 0 -or $remote -contains 'Any' -or $remote -contains __SOURCE_IP__) { $allowed=$true; break }
-}
-$created=$false
-if(-not $allowed) {
-    New-NetFirewallRule -DisplayName __RULE_NAME__ -Direction Inbound -Protocol TCP -LocalPort __PORT__ -RemoteAddress __SOURCE_IP__ -Action Allow -Profile Any -ErrorAction Stop | Out-Null
-    $created=$true
-}
-[pscustomobject]@{AllowedBefore=$allowed;RuleCreated=$created} | ConvertTo-Json -Compress
+New-NetFirewallRule -Name __RULE_NAME__ -DisplayName __RULE_NAME__ -Direction Inbound -Protocol TCP -LocalPort __PORT__ -RemoteAddress __SOURCE_IP__ -Action Allow -Profile Any -ErrorAction Stop | Out-Null
+[pscustomobject]@{AllowedBefore=$false;RuleCreated=$true} | ConvertTo-Json -Compress
 "
                 .Replace("__PORT__", port.ToString())
                 .Replace("__SOURCE_IP__", QuotePowerShell(sourceIp))
@@ -542,7 +524,7 @@ if(-not $allowed) {
             if (string.IsNullOrWhiteSpace(ruleName))
                 return;
             RemoteCommandResult result = await executor.ExecutePowerShellAsync(
-                "Remove-NetFirewallRule -DisplayName " + QuotePowerShell(ruleName) + " -ErrorAction SilentlyContinue",
+                "Remove-NetFirewallRule -Name " + QuotePowerShell(ruleName) + " -ErrorAction SilentlyContinue",
                 TimeSpan.FromSeconds(20),
                 cancellationToken);
             EnsureSuccess(result, "清理本机 IP 防火墙规则");
