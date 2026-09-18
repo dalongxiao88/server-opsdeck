@@ -8,12 +8,14 @@
     <ImplicitUsings>disable</ImplicitUsings>
     <Nullable>disable</Nullable>
     <RootNamespace>RDPManager</RootNamespace>
-    <AssemblyName>小白服务器管理器</AssemblyName>
+    <AssemblyName>小白服务器管理器_v2</AssemblyName>
     <ApplicationIcon>favicon.ico</ApplicationIcon>
   </PropertyGroup>
 
   <ItemGroup>
     <Compile Remove="work\**\*.cs" />
+    <!-- 新版位于根目录子目录，旧版项目不得递归编译新版源码。 -->
+    <Compile Remove="新版\**\*.cs" />
     <EmbeddedResource Include="favicon.ico">
       <LogicalName>RDPManager.favicon.ico</LogicalName>
     </EmbeddedResource>

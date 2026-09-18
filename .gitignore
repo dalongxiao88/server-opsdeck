@@ -5,6 +5,8 @@ obj/
 [Dd]ebug/
 [Rr]elease/
 publish/
+legacy_publish*/
+icon_compact_preview/
 
 # Local deployment packages and generated binaries
 发布包_*/
