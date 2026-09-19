@@ -1,6 +1,8 @@
 using System;
+using System.Diagnostics;
 using System.Drawing;
 using System.IO;
+using System.Net.Sockets;
 using System.Text;
 using System.Text.Json;
 using System.Threading;
@@ -29,12 +31,18 @@ namespace ServerForge
         private readonly CancellationTokenSource cancellation = new CancellationTokenSource();
         private readonly Label statusLabel;
         private readonly Label statusDot;
+        private readonly Label latencyLabel;
+        private readonly System.Windows.Forms.Timer latencyTimer;
+        private readonly ToolTip latencyToolTip;
         private readonly WebView2 webView;
         private SshRemoteClient client;
         private ShellStream shell;
         private bool pageReady;
         private bool sessionStarted;
         private bool closing;
+        private bool latencyMonitoring;
+        private bool latencyProbeRunning;
+        private int latencyGeneration;
 
         public SshTerminalForm(Server server, string serverPassword)
         {
@@ -46,7 +54,8 @@ namespace ServerForge
             Text = displayName + " - Linux终端";
             ClientSize = new Size(1000, 650);
             MinimumSize = new Size(720, 460);
-            StartPosition = FormStartPosition.CenterParent;
+            StartPosition = FormStartPosition.WindowsDefaultLocation;
+            ShowInTaskbar = true;
             BackColor = Surface;
             Font = new Font("Microsoft YaHei UI", 9F);
 
@@ -62,29 +71,44 @@ namespace ServerForge
             {
                 AutoEllipsis = true,
                 Text = displayName,
-                Size = new Size(285, 28),
                 ForeColor = TextColor,
                 Font = new Font("Microsoft YaHei UI", 11F, FontStyle.Bold),
-                Location = new Point(18, 14)
+                TextAlign = ContentAlignment.MiddleLeft
             };
             statusDot = new Label
             {
-                AutoSize = true,
                 Text = "●",
                 ForeColor = MutedColor,
                 Font = new Font("Segoe UI Symbol", 12F, FontStyle.Bold),
-                Location = new Point(318, 13)
+                TextAlign = ContentAlignment.MiddleCenter
             };
             statusLabel = new Label
             {
-                AutoSize = true,
+                AutoEllipsis = true,
                 Text = "正在准备终端",
                 ForeColor = MutedColor,
-                Location = new Point(336, 15)
+                TextAlign = ContentAlignment.MiddleLeft
             };
+            latencyLabel = new Label
+            {
+                AutoEllipsis = true,
+                Text = "延迟 --",
+                ForeColor = MutedColor,
+                TextAlign = ContentAlignment.MiddleLeft,
+                Visible = false
+            };
+            latencyToolTip = new ToolTip();
+            latencyToolTip.SetToolTip(latencyLabel, "每 5 秒测量一次 SSH 端口的 TCP 建连耗时，不代表终端命令响应时间");
+            latencyTimer = new System.Windows.Forms.Timer { Interval = 5000 };
+            latencyTimer.Tick += (sender, args) => _ = MeasureLatencyAsync(latencyGeneration);
             header.Controls.Add(nameLabel);
             header.Controls.Add(statusDot);
             header.Controls.Add(statusLabel);
+            header.Controls.Add(latencyLabel);
+            header.SizeChanged += (sender, args) => LayoutHeader(header, nameLabel);
+            statusLabel.TextChanged += (sender, args) => LayoutHeader(header, nameLabel);
+            latencyLabel.VisibleChanged += (sender, args) => LayoutHeader(header, nameLabel);
+            LayoutHeader(header, nameLabel);
 
             webView = new WebView2
             {
@@ -95,6 +119,44 @@ namespace ServerForge
             Controls.Add(webView);
             Controls.Add(header);
             Shown += SshTerminalForm_Shown;
+        }
+
+        private void LayoutHeader(Panel header, Label nameLabel)
+        {
+            const int left = 18;
+            const int right = 18;
+            const int nameStatusGap = 14;
+            const int dotWidth = 18;
+            const int dotTextGap = 4;
+            const int minimumStatusWidth = 96;
+            const int statusLatencyGap = 14;
+            const int latencyWidth = 110;
+
+            int availableWidth = Math.Max(1, header.ClientSize.Width - left - right);
+            int preferredStatusWidth = TextRenderer.MeasureText(statusLabel.Text, statusLabel.Font, Size.Empty,
+                TextFormatFlags.NoPadding | TextFormatFlags.SingleLine).Width + 10;
+            int reservedStatusWidth = nameStatusGap + dotWidth + dotTextGap +
+                (latencyLabel.Visible ? preferredStatusWidth : minimumStatusWidth) +
+                (latencyLabel.Visible ? statusLatencyGap + latencyWidth : 0);
+            int maximumNameWidth = Math.Max(100, availableWidth - reservedStatusWidth);
+            int preferredNameWidth = TextRenderer.MeasureText(nameLabel.Text, nameLabel.Font, Size.Empty,
+                TextFormatFlags.NoPadding | TextFormatFlags.SingleLine).Width + 12;
+            int nameWidth = Math.Min(preferredNameWidth, maximumNameWidth);
+            int statusX = left + nameWidth + nameStatusGap;
+            int labelX = statusX + dotWidth + dotTextGap;
+            int remainingStatusWidth = header.ClientSize.Width - right - labelX -
+                (latencyLabel.Visible ? statusLatencyGap + latencyWidth : 0);
+            int statusWidth = Math.Min(latencyLabel.Visible ? preferredStatusWidth :
+                Math.Max(minimumStatusWidth, preferredStatusWidth),
+                Math.Max(1, remainingStatusWidth));
+            int rowHeight = Math.Min(28, header.ClientSize.Height);
+            int rowTop = Math.Max(0, (header.ClientSize.Height - rowHeight) / 2);
+
+            nameLabel.Bounds = new Rectangle(left, rowTop, nameWidth, rowHeight);
+            statusDot.Bounds = new Rectangle(statusX, rowTop, dotWidth, rowHeight);
+            statusLabel.Bounds = new Rectangle(labelX, rowTop, statusWidth, rowHeight);
+            latencyLabel.Bounds = new Rectangle(labelX + statusWidth + statusLatencyGap, rowTop,
+                latencyWidth, rowHeight);
         }
 
         private async void SshTerminalForm_Shown(object sender, EventArgs e)
@@ -268,13 +330,72 @@ namespace ServerForge
         private void SetConnected()
         {
             UpdateStatus("已连接", Green);
+            SetLatencyMonitoring(true);
             SendStatus("已连接");
         }
 
         private void SetDisconnected(string detail)
         {
             UpdateStatus(detail, Red);
+            SetLatencyMonitoring(false);
             SendStatus(detail);
+        }
+
+        private void SetLatencyMonitoring(bool enabled)
+        {
+            if (closing || IsDisposed || !IsHandleCreated)
+                return;
+            if (InvokeRequired)
+            {
+                BeginInvoke(new Action<bool>(SetLatencyMonitoring), enabled);
+                return;
+            }
+            if (latencyMonitoring == enabled)
+                return;
+
+            latencyMonitoring = enabled;
+            latencyGeneration++;
+            latencyTimer.Stop();
+            latencyLabel.Visible = enabled;
+            latencyLabel.Text = "延迟 --";
+            if (enabled)
+            {
+                latencyTimer.Start();
+                _ = MeasureLatencyAsync(latencyGeneration);
+            }
+        }
+
+        private async Task MeasureLatencyAsync(int generation)
+        {
+            if (closing || !latencyMonitoring || latencyProbeRunning)
+                return;
+
+            latencyProbeRunning = true;
+            long? latency = null;
+            try
+            {
+                int port = RemoteExecutorFactory.GetManagementPort(server, RemoteTransport.SSH);
+                using (CancellationTokenSource timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellation.Token))
+                using (TcpClient probe = new TcpClient())
+                {
+                    timeout.CancelAfter(2500);
+                    Stopwatch stopwatch = Stopwatch.StartNew();
+                    await probe.ConnectAsync(server.IP, port, timeout.Token);
+                    latency = stopwatch.ElapsedMilliseconds;
+                }
+            }
+            catch (Exception)
+            {
+                // A failed TCP probe does not change the active SSH session's status.
+            }
+            finally
+            {
+                latencyProbeRunning = false;
+            }
+
+            if (closing || IsDisposed || !latencyMonitoring || generation != latencyGeneration)
+                return;
+            latencyLabel.Text = latency.HasValue ? "延迟 " + latency.Value + " ms" : "延迟 --";
         }
 
         private void UpdateStatus(string text, Color color)
@@ -399,6 +520,11 @@ namespace ServerForge
         protected override void OnFormClosing(FormClosingEventArgs e)
         {
             closing = true;
+            latencyMonitoring = false;
+            latencyGeneration++;
+            latencyTimer.Stop();
+            latencyTimer.Dispose();
+            latencyToolTip.Dispose();
             cancellation.Cancel();
             lock (streamSync)
             {

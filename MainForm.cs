@@ -31,6 +31,7 @@ namespace ServerForge
         private readonly List<Server> servers = new List<Server>();
         private readonly Dictionary<Server, ServerProbeResult> probes = new Dictionary<Server, ServerProbeResult>();
         private readonly Dictionary<Server, List<NetworkRateSample>> networkHistories = new Dictionary<Server, List<NetworkRateSample>>();
+        private readonly HashSet<SshTerminalForm> sshTerminals = new HashSet<SshTerminalForm>();
         private readonly ServerResourceMonitorService resourceMonitorService = new ServerResourceMonitorService();
 
         private const int PasswordValidMinutes = 120;
@@ -983,8 +984,19 @@ namespace ServerForge
             try
             {
                 SshTerminalForm terminal = new SshTerminalForm(server, password);
-                terminal.Show(this);
-                statusBarLabel.Text = "已打开内嵌 SSH 终端";
+                terminal.FormClosed += (sender, args) => sshTerminals.Remove(terminal);
+                sshTerminals.Add(terminal);
+                try
+                {
+                    terminal.Show();
+                }
+                catch
+                {
+                    sshTerminals.Remove(terminal);
+                    terminal.Dispose();
+                    throw;
+                }
+                statusBarLabel.Text = "已打开独立 SSH 终端";
             }
             catch (Exception ex)
             {
@@ -2024,6 +2036,12 @@ namespace ServerForge
         protected override void OnFormClosing(FormClosingEventArgs e)
         {
             CancelResourceMonitoring();
+            foreach (SshTerminalForm terminal in sshTerminals.ToArray())
+            {
+                try { terminal.Close(); }
+                catch { terminal.Dispose(); }
+            }
+            sshTerminals.Clear();
             uiTimer?.Stop();
             refreshTimer?.Stop();
             uiTimer?.Dispose();
