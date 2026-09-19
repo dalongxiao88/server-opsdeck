@@ -6,7 +6,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using MySqlConnector;
 
-namespace RDPManager
+namespace ServerForge
 {
     public sealed class MySqlPermissionSelection
     {

@@ -1,7 +1,7 @@
 using System;
 using System.IO;
 
-namespace RDPManager
+namespace ServerForge
 {
     public static class AdminPasswordStore
     {

@@ -10,7 +10,7 @@ using Microsoft.Web.WebView2.Core;
 using Microsoft.Web.WebView2.WinForms;
 using Renci.SshNet;
 
-namespace RDPManager
+namespace ServerForge
 {
     public sealed class SshTerminalForm : Form
     {
@@ -378,9 +378,9 @@ namespace RDPManager
 
         private static string BuildTerminalPage()
         {
-            string xterm = ReadResource("RDPManager.TerminalAssets.xterm.js");
-            string fit = ReadResource("RDPManager.TerminalAssets.xterm-addon-fit.js");
-            string css = ReadResource("RDPManager.TerminalAssets.xterm.css");
+            string xterm = ReadResource("ServerForge.TerminalAssets.xterm.js");
+            string fit = ReadResource("ServerForge.TerminalAssets.xterm-addon-fit.js");
+            string css = ReadResource("ServerForge.TerminalAssets.xterm.css");
             return "<!doctype html><html><head><meta charset=\"utf-8\"><style>" + css +
                 "html,body,#terminal{width:100%;height:100%;margin:0;overflow:hidden;background:#14181c;}" +
                 ".xterm{height:100%;padding:10px 12px;box-sizing:border-box;}" +

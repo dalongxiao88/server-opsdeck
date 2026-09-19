@@ -4,7 +4,7 @@ using System.Drawing;
 using System.Globalization;
 using System.Windows.Forms;
 
-namespace RDPManager
+namespace ServerForge
 {
     public sealed class LinuxSystemInfoForm : Form
     {
@@ -177,7 +177,7 @@ namespace RDPManager
         {
             try
             {
-                using (System.IO.Stream stream = typeof(LinuxSystemInfoForm).Assembly.GetManifestResourceStream("RDPManager.favicon.ico"))
+                using (System.IO.Stream stream = typeof(LinuxSystemInfoForm).Assembly.GetManifestResourceStream("ServerForge.favicon.ico"))
                 {
                     if (stream != null)
                         Icon = new Icon(stream);

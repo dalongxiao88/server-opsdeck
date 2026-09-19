@@ -7,7 +7,7 @@ using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 
-namespace RDPManager
+namespace ServerForge
 {
     public sealed class LinuxPortManagementService
     {
@@ -139,7 +139,7 @@ namespace RDPManager
                     OldPort = request.Target.Port,
                     NewPort = request.NewPort,
                     BackupPath = "/tmp/xiaobai-sshd-" + Guid.NewGuid().ToString("N") + ".bak",
-                    FirewallRuleName = "XiaoBai SSH " + request.NewPort,
+                    FirewallRuleName = "ServerForge SSH " + request.NewPort,
                     ServiceRestarted = false
                 };
                 SshRemoteExecutor newExecutor = null;
@@ -311,7 +311,7 @@ namespace RDPManager
                     OldPort = request.Target.Port,
                     NewPort = request.NewPort,
                     BackupPath = "/tmp/xiaobai-db-port-" + Guid.NewGuid().ToString("N") + ".bak",
-                    FirewallRuleName = "XiaoBai " + request.Target.ServiceType + " " + request.NewPort,
+                    FirewallRuleName = "ServerForge " + request.Target.ServiceType + " " + request.NewPort,
                     ServiceRestarted = false
                 };
                 try
@@ -430,7 +430,7 @@ namespace RDPManager
                     OldPort = request.Target.Port,
                     NewPort = request.NewPort,
                     BackupPath = "/tmp/xiaobai-web-port-" + Guid.NewGuid().ToString("N") + ".bak",
-                    FirewallRuleName = "XiaoBai " + request.Target.ServiceType + " " + request.NewPort,
+                    FirewallRuleName = "ServerForge " + request.Target.ServiceType + " " + request.NewPort,
                     ServiceRestarted = false
                 };
                 try

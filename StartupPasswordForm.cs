@@ -2,7 +2,7 @@ using System;
 using System.Drawing;
 using System.Windows.Forms;
 
-namespace RDPManager
+namespace ServerForge
 {
     public sealed class StartupPasswordForm : Form
     {
@@ -45,7 +45,7 @@ namespace RDPManager
 
         private void InitializeComponent()
         {
-            Text = firstRun ? "首次启动设置" : "解锁服务器管理器";
+            Text = firstRun ? "首次启动设置" : "解锁 ServerForge";
             AutoScaleMode = AutoScaleMode.None;
             AutoScaleDimensions = new SizeF(96F, 96F);
             ClientSize = new Size(430, firstRun ? 205 : 170);
@@ -68,7 +68,7 @@ namespace RDPManager
             };
             hintLabel = new Label
             {
-                Text = firstRun ? "用于保护服务器列表和远程连接操作" : "验证通过后才能进入服务器管理器",
+                Text = firstRun ? "用于保护服务器列表和远程连接操作" : "验证通过后才能进入 ServerForge",
                 AutoSize = true,
                 ForeColor = Color.FromArgb(105, 115, 125),
                 Location = new Point(26, 52)

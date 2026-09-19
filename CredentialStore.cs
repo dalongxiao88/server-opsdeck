@@ -3,7 +3,7 @@ using System.ComponentModel;
 using System.Runtime.InteropServices;
 using System.Text;
 
-namespace RDPManager
+namespace ServerForge
 {
     // Windows Credential Manager keeps secrets outside the application folder.
     public static class CredentialStore

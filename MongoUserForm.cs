@@ -5,7 +5,7 @@ using System.Linq;
 using System.Security.Cryptography;
 using System.Windows.Forms;
 
-namespace RDPManager
+namespace ServerForge
 {
     public sealed class MongoUserForm : Form
     {

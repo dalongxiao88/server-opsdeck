@@ -3,7 +3,7 @@ using System.Drawing;
 using System.Security.Cryptography;
 using System.Windows.Forms;
 
-namespace RDPManager
+namespace ServerForge
 {
     public sealed class MySqlUserForm : Form
     {

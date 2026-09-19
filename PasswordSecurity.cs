@@ -1,7 +1,7 @@
 using System;
 using System.Security.Cryptography;
 
-namespace RDPManager
+namespace ServerForge
 {
     public static class PasswordSecurity
     {

@@ -5,7 +5,7 @@ using System.Net.Sockets;
 using System.Threading;
 using System.Threading.Tasks;
 
-namespace RDPManager
+namespace ServerForge
 {
     public sealed class ServerProbeResult
     {
@@ -16,11 +16,39 @@ namespace RDPManager
         public string DetailText { get; set; }
         public DateTime CheckedAt { get; set; }
 
+        public string RatingText
+        {
+            get
+            {
+                if (CheckedAt == DateTime.MinValue)
+                    return "待检测";
+                if (!IsServiceAvailable || !LatencyMilliseconds.HasValue)
+                    return "失败";
+                if (LatencyMilliseconds.Value < 50)
+                    return "良好";
+                if (LatencyMilliseconds.Value < 100)
+                    return "一般";
+                if (LatencyMilliseconds.Value < 200)
+                    return "较弱";
+                return "卡顿";
+            }
+        }
+
+        public string LatencyDisplayText
+        {
+            get { return LatencyMilliseconds.HasValue ? LatencyMilliseconds.Value + " ms" : "--"; }
+        }
+
+        public string CompactDisplayText
+        {
+            get { return LatencyDisplayText + " · " + RatingText; }
+        }
+
         public static ServerProbeResult Pending()
         {
             return new ServerProbeResult
             {
-                DisplayText = "等待检测",
+                DisplayText = "-- · 待检测",
                 DetailText = "尚未检测",
                 CheckedAt = DateTime.MinValue
             };
@@ -38,7 +66,7 @@ namespace RDPManager
             {
                 return new ServerProbeResult
                 {
-                    DisplayText = "端口错误",
+                    DisplayText = "-- · 失败",
                     DetailText = "端口必须在 1-65535 之间",
                     CheckedAt = DateTime.Now
                 };
@@ -50,8 +78,6 @@ namespace RDPManager
 
             long? pingLatency = pingTask.Result;
             long? tcpLatency = tcpTask.Result;
-            string protocol = server.Type == ServerType.Windows ? "RDP" : "SSH";
-
             if (tcpLatency.HasValue)
             {
                 return new ServerProbeResult
@@ -59,7 +85,7 @@ namespace RDPManager
                     IsOnline = true,
                     IsServiceAvailable = true,
                     LatencyMilliseconds = tcpLatency,
-                    DisplayText = string.Format("{0} TCP {1} ms", protocol, tcpLatency.Value),
+                    DisplayText = string.Format("{0} ms · {1}", tcpLatency.Value, GetLatencyRating(tcpLatency)),
                     DetailText = pingLatency.HasValue
                         ? string.Format("服务端口正常，Ping {0} ms", pingLatency.Value)
                         : "服务端口正常，服务器未响应 Ping",
@@ -74,7 +100,7 @@ namespace RDPManager
                     IsOnline = true,
                     IsServiceAvailable = false,
                     LatencyMilliseconds = pingLatency,
-                    DisplayText = "端口无响应",
+                    DisplayText = string.Format("{0} · 失败", pingLatency.HasValue ? pingLatency.Value + " ms" : "--"),
                     DetailText = string.Format("主机可达（Ping {0} ms），但 {1} 端口未响应", pingLatency.Value, port),
                     CheckedAt = DateTime.Now
                 };
@@ -84,7 +110,7 @@ namespace RDPManager
             {
                 IsOnline = false,
                 IsServiceAvailable = false,
-                DisplayText = "无法连接",
+                DisplayText = "-- · 失败",
                 DetailText = "Ping 和服务端口均无响应",
                 CheckedAt = DateTime.Now
             };
@@ -104,6 +130,19 @@ namespace RDPManager
             {
                 return null;
             }
+        }
+
+        private static string GetLatencyRating(long? latency)
+        {
+            if (!latency.HasValue)
+                return "失败";
+            if (latency.Value < 50)
+                return "良好";
+            if (latency.Value < 100)
+                return "一般";
+            if (latency.Value < 200)
+                return "较弱";
+            return "卡顿";
         }
 
         private static async Task<long?> MeasureTcpAsync(string host, int port)

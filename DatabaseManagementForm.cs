@@ -7,7 +7,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 
-namespace RDPManager
+namespace ServerForge
 {
     public enum DatabaseStatusKind
     {
@@ -603,7 +603,7 @@ namespace RDPManager
         {
             try
             {
-                using (System.IO.Stream stream = typeof(DatabaseManagementForm).Assembly.GetManifestResourceStream("RDPManager.favicon.ico"))
+                using (System.IO.Stream stream = typeof(DatabaseManagementForm).Assembly.GetManifestResourceStream("ServerForge.favicon.ico"))
                 {
                     if (stream != null)
                         Icon = new Icon(stream);

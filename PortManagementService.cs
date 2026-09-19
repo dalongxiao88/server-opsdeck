@@ -4,7 +4,7 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 
-namespace RDPManager
+namespace ServerForge
 {
     public sealed class PortManagementService
     {
@@ -493,7 +493,7 @@ namespace RDPManager
                 throw new InvalidOperationException("无法识别当前管理电脑的 IP，未自动修改防火墙");
             sourceIp = parsedAddress.ToString();
 
-            string ruleName = "XiaoBai-Client-" + port + "-" + Guid.NewGuid().ToString("N").Substring(0, 8);
+            string ruleName = "ServerForge-Client-" + port + "-" + Guid.NewGuid().ToString("N").Substring(0, 8);
             // A scoped temporary rule is faster and more reliable than walking every
             // firewall rule and resolving its port/address filters one at a time.
             string script = @"
@@ -561,7 +561,7 @@ New-NetFirewallRule -Name __RULE_NAME__ -DisplayName __RULE_NAME__ -Direction In
 
         public async Task<PortChangeSession> ApplyAsync(IRemoteExecutor executor, DetectedServicePort target, int newPort, bool configureFirewall, Action<string> log, CancellationToken cancellationToken)
         {
-            string rule = "XiaoBai-RDP-" + newPort + "-" + Guid.NewGuid().ToString("N").Substring(0, 8);
+            string rule = "ServerForge-RDP-" + newPort + "-" + Guid.NewGuid().ToString("N").Substring(0, 8);
             string script = "$ErrorActionPreference='Stop'; " +
                 "$old=(Get-ItemProperty -Path '" + RegistryPath + "' -Name PortNumber).PortNumber; " +
                 "if (" + (configureFirewall ? "$true" : "$false") + ") { New-NetFirewallRule -DisplayName '" + rule + "' -Direction Inbound -Protocol TCP -LocalPort " + newPort + " -Action Allow -Profile Any -ErrorAction SilentlyContinue | Out-Null }; " +
@@ -638,7 +638,7 @@ New-NetFirewallRule -Name __RULE_NAME__ -DisplayName __RULE_NAME__ -Direction In
             CancellationToken cancellationToken)
         {
             string backupPath = target.ConfigPath + ".xiao-bai-backup";
-            string ruleName = "XiaoBai-SSH-" + newPort + "-" + Guid.NewGuid().ToString("N").Substring(0, 8);
+            string ruleName = "ServerForge-SSH-" + newPort + "-" + Guid.NewGuid().ToString("N").Substring(0, 8);
             string script = @"
 $ErrorActionPreference='Stop'
 Copy-Item -LiteralPath __CONFIG_PATH__ -Destination __BACKUP_PATH__ -Force

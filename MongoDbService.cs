@@ -6,7 +6,7 @@ using System.Threading.Tasks;
 using MongoDB.Bson;
 using MongoDB.Driver;
 
-namespace RDPManager
+namespace ServerForge
 {
     public sealed class MongoConnectionTestResult
     {

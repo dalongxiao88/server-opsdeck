@@ -1,7 +1,7 @@
 using System;
 using System.Windows.Forms;
 
-namespace RDPManager
+namespace ServerForge
 {
     static class Program
     {

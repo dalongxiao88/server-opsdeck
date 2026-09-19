@@ -4,7 +4,7 @@ using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 
-namespace RDPManager
+namespace ServerForge
 {
     public interface IPortServiceAdapter
     {
@@ -49,7 +49,7 @@ namespace RDPManager
             CancellationToken cancellationToken)
         {
             string backupPath = target.ConfigPath + ".xiao-bai-backup";
-            string ruleName = "XiaoBai-" + target.ServiceType + "-" + newPort + "-" + Guid.NewGuid().ToString("N").Substring(0, 8);
+            string ruleName = "ServerForge-" + target.ServiceType + "-" + newPort + "-" + Guid.NewGuid().ToString("N").Substring(0, 8);
             string script = ChangeScript
                 .Replace("__CONFIG_PATH__", Quote(target.ConfigPath))
                 .Replace("__BACKUP_PATH__", Quote(backupPath))

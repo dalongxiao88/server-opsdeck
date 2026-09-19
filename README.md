@@ -1,10 +1,11 @@
-# 小白服务器管理器
+# ServerForge
 
 基于 .NET 8 WinForms 的 Windows 服务器远程管理工具，面向多台服务器的日常运维场景。
 
 ## 当前能力
 
 - SSH / RDP 连接管理与实时延迟检测
+- 当前选中服务器的资源监控：CPU、内存、磁盘、网络速率/波动和额外进程
 - Linux SSH 登录、系统信息、远程重启和 SSH 端口安全迁移
 - 远程重启及重启状态验证
 - SSH、RDP、HTTP/HTTPS 等端口检测与修改
@@ -18,8 +19,8 @@
 环境要求：Windows、.NET 8 SDK。
 
 ```powershell
-dotnet restore RDPManager.sln
-dotnet build RDPManager.sln -c Release
+dotnet restore ServerForge.sln
+dotnet build ServerForge.sln -c Release
 ```
 
 程序运行时产生的 `servers.xml`、`servers.vault` 和其他凭据文件属于本机数据，不应提交到版本库。
@@ -27,6 +28,7 @@ dotnet build RDPManager.sln -c Release
 ## 安全边界
 
 - 项目不部署 Agent，不依赖中转服务器。
+- 资源监控只在选中服务器或点击“刷新当前服务器”时通过现有 SSH / WinRM 通道读取，不采集未选中的服务器。
 - 数据库管理通过 SSH 隧道完成。
 - 当前不提供一键卸载数据库、删除数据库目录或删除数据库数据的功能。
 - Oracle 相关入口暂保留，数据库管理和一键部署尚未实现。

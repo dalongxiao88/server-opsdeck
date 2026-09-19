@@ -2,7 +2,7 @@ using System;
 using System.Net;
 using System.Text.RegularExpressions;
 
-namespace RDPManager
+namespace ServerForge
 {
     public static class RemoteErrorFormatter
     {

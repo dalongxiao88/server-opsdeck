@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
+using System.Drawing.Drawing2D;
 using System.IO;
 using System.Linq;
 using System.Net.Sockets;
@@ -10,7 +11,7 @@ using System.Threading.Tasks;
 using System.Threading;
 using System.Windows.Forms;
 
-namespace RDPManager
+namespace ServerForge
 {
     public sealed class MainForm : Form
     {
@@ -29,10 +30,13 @@ namespace RDPManager
         private readonly string vaultFile = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "servers.vault");
         private readonly List<Server> servers = new List<Server>();
         private readonly Dictionary<Server, ServerProbeResult> probes = new Dictionary<Server, ServerProbeResult>();
+        private readonly Dictionary<Server, List<NetworkRateSample>> networkHistories = new Dictionary<Server, List<NetworkRateSample>>();
+        private readonly ServerResourceMonitorService resourceMonitorService = new ServerResourceMonitorService();
 
         private const int PasswordValidMinutes = 120;
         private bool refreshing;
-        private bool updatingStatusList;
+        private bool rebuildingGrid;
+        private bool resourceMonitoringReady;
         private bool showFullIP;
         private string activeMetric = "all";
         private DateTime ipShownAt = DateTime.MinValue;
@@ -43,19 +47,15 @@ namespace RDPManager
         private byte[] vaultSalt;
 
         private TextBox searchBox;
-        private ListBox serverStatusList;
         private DataGridView serverGrid;
-        private Label selectionInfo;
-        private Label lastUpdateLabel;
+        private ServerResourcePanel resourcePanel;
+        private ProbeStatusIndicator probeStatusIndicator;
         private Button serverMetric;
         private Button onlineMetric;
         private Button issuesMetric;
         private Button expiryMetric;
-        private Button changeAdminButton;
-        private Button resetAdminButton;
         private Button addButton;
         private Button connectButton;
-        private Button editButton;
         private Button restartButton;
         private Button portButton;
         private Button refreshButton;
@@ -66,6 +66,9 @@ namespace RDPManager
         private System.Windows.Forms.Timer refreshTimer;
         private System.Windows.Forms.Timer uiTimer;
         private bool operationRunning;
+        private CancellationTokenSource resourceMonitorCancellation;
+        private Server resourceMonitorSelection;
+        private int resourceMonitorRequestId;
 
         public MainForm(StartupSession session)
         {
@@ -78,15 +81,19 @@ namespace RDPManager
                 servers.AddRange(session.Servers);
             UpdateStorageStatus();
             RefreshMetricBar();
-            RefreshServerStatusList();
             RefreshGrid();
             StartTimers();
-            Shown += async (sender, args) => await RefreshServerStatusAsync();
+            Shown += async (sender, args) =>
+            {
+                resourceMonitoringReady = true;
+                HandleResourceSelectionChanged(true);
+                await RefreshServerStatusAsync();
+            };
         }
 
         private void InitializeComponent()
         {
-            Text = "小白服务器管理器";
+            Text = "ServerForge";
             ClientSize = new Size(1320, 760);
             MinimumSize = new Size(980, 620);
             StartPosition = FormStartPosition.CenterScreen;
@@ -97,7 +104,6 @@ namespace RDPManager
             TryLoadIcon();
 
             Panel header = CreateHeader();
-            Panel metrics = CreateMetricBar();
             Panel content = CreateMainContent();
             StatusStrip statusStrip = new StatusStrip
             {
@@ -114,7 +120,6 @@ namespace RDPManager
             statusStrip.Items.Add(statusBarLabel);
 
             Controls.Add(content);
-            Controls.Add(metrics);
             Controls.Add(header);
             Controls.Add(statusStrip);
         }
@@ -124,58 +129,6 @@ namespace RDPManager
             Panel header = new Panel
             {
                 Dock = DockStyle.Top,
-                Height = 52,
-                BackColor = Surface,
-                Padding = new Padding(16, 8, 16, 8)
-            };
-            Label title = new Label
-            {
-                AutoSize = true,
-                Text = "服务器管理",
-                Font = new Font("Microsoft YaHei UI", 14F, FontStyle.Bold),
-                ForeColor = TextColor,
-                Location = new Point(16, 14)
-            };
-            Label subtitle = new Label
-            {
-                AutoSize = true,
-                Text = "RDP / SSH",
-                ForeColor = MutedColor,
-                Location = new Point(118, 18)
-            };
-            Label searchLabel = new Label
-            {
-                AutoSize = true,
-                Text = "搜索",
-                ForeColor = MutedColor,
-                Anchor = AnchorStyles.Top | AnchorStyles.Right,
-                Location = new Point(920, 18)
-            };
-            searchBox = new TextBox
-            {
-                Anchor = AnchorStyles.Top | AnchorStyles.Right,
-                Location = new Point(960, 12),
-                Size = new Size(330, 27),
-                BorderStyle = BorderStyle.FixedSingle
-            };
-            searchBox.TextChanged += (sender, args) => RefreshGrid();
-            header.Controls.Add(title);
-            header.Controls.Add(subtitle);
-            header.Controls.Add(searchLabel);
-            header.Controls.Add(searchBox);
-            header.Resize += (sender, args) =>
-            {
-                searchBox.Left = header.ClientSize.Width - searchBox.Width - 16;
-                searchLabel.Left = searchBox.Left - searchLabel.Width - 10;
-            };
-            return header;
-        }
-
-        private Panel CreateMetricBar()
-        {
-            Panel panel = new Panel
-            {
-                Dock = DockStyle.Top,
                 Height = 46,
                 BackColor = WindowBackground,
                 Padding = new Padding(10, 4, 10, 4)
@@ -183,45 +136,73 @@ namespace RDPManager
             TableLayoutPanel layout = new TableLayoutPanel
             {
                 Dock = DockStyle.Fill,
-                ColumnCount = 7,
+                ColumnCount = 6,
                 RowCount = 1,
-                BackColor = WindowBackground
+                Margin = new Padding(0),
+                Padding = new Padding(0),
+                BackColor = WindowBackground,
+                GrowStyle = TableLayoutPanelGrowStyle.FixedSize
             };
-            layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 160));
-            layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 160));
-            layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 160));
-            layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 160));
-            layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 154));
-            layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 154));
-            layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 13F));
+            layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 13F));
+            layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 13F));
+            layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 13F));
+            layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 13F));
+            layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 35F));
+            layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
+
             serverMetric = CreateMetricButton("服务器", Green);
             onlineMetric = CreateMetricButton("在线", Green);
             issuesMetric = CreateMetricButton("异常", Red);
             expiryMetric = CreateMetricButton("30 天内到期", Orange);
-            changeAdminButton = CreateSecurityButton("修改管理密码", Blue);
-            resetAdminButton = CreateSecurityButton("重置管理密码", Red);
-            lastUpdateLabel = new Label
+            serverMetric.Click += (sender, args) => SelectMetric("all");
+            onlineMetric.Click += (sender, args) => SelectMetric("online");
+            issuesMetric.Click += (sender, args) => SelectMetric("issues");
+            expiryMetric.Click += (sender, args) => SelectMetric("expiring");
+
+            probeStatusIndicator = new ProbeStatusIndicator
             {
                 Dock = DockStyle.Fill,
-                TextAlign = ContentAlignment.MiddleRight,
+                Margin = new Padding(2, 0, 2, 0)
+            };
+            Panel searchPanel = new Panel
+            {
+                Dock = DockStyle.Fill,
+                BackColor = WindowBackground,
+                Margin = new Padding(2, 0, 0, 0)
+            };
+            Label searchLabel = new Label
+            {
+                AutoSize = true,
+                Text = "搜索",
                 ForeColor = MutedColor,
-                Padding = new Padding(0, 0, 12, 0)
+                Anchor = AnchorStyles.Top | AnchorStyles.Left,
+                Location = new Point(0, 10)
+            };
+            searchBox = new TextBox
+            {
+                Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right,
+                Location = new Point(48, 5),
+                Size = new Size(280, 27),
+                BorderStyle = BorderStyle.FixedSingle
+            };
+            searchBox.TextChanged += (sender, args) => RefreshGrid();
+            searchPanel.Controls.Add(searchLabel);
+            searchPanel.Controls.Add(searchBox);
+            searchPanel.Resize += (sender, args) =>
+            {
+                searchLabel.Left = 4;
+                searchBox.Left = searchLabel.Right + 8;
+                searchBox.Width = Math.Max(100, searchPanel.ClientSize.Width - searchBox.Left - 2);
             };
             layout.Controls.Add(serverMetric, 0, 0);
             layout.Controls.Add(onlineMetric, 1, 0);
             layout.Controls.Add(issuesMetric, 2, 0);
             layout.Controls.Add(expiryMetric, 3, 0);
-            layout.Controls.Add(changeAdminButton, 4, 0);
-            layout.Controls.Add(resetAdminButton, 5, 0);
-            layout.Controls.Add(lastUpdateLabel, 6, 0);
-            serverMetric.Click += (sender, args) => SelectMetric("all");
-            onlineMetric.Click += (sender, args) => SelectMetric("online");
-            issuesMetric.Click += (sender, args) => SelectMetric("issues");
-            expiryMetric.Click += (sender, args) => SelectMetric("expiring");
-            changeAdminButton.Click += (sender, args) => ChangeAdminPassword();
-            resetAdminButton.Click += (sender, args) => ResetAdminPassword();
-            panel.Controls.Add(layout);
-            return panel;
+            layout.Controls.Add(probeStatusIndicator, 4, 0);
+            layout.Controls.Add(searchPanel, 5, 0);
+            header.Controls.Add(layout);
+            return header;
         }
 
         private static Button CreateMetricButton(string caption, Color accent)
@@ -241,25 +222,6 @@ namespace RDPManager
             return button;
         }
 
-        private static Button CreateSecurityButton(string caption, Color accent)
-        {
-            Button button = new Button
-            {
-                Dock = DockStyle.Fill,
-                Text = caption,
-                TextAlign = ContentAlignment.MiddleCenter,
-                FlatStyle = FlatStyle.Flat,
-                BackColor = Surface,
-                ForeColor = accent,
-                Margin = new Padding(2, 0, 2, 0),
-                UseVisualStyleBackColor = false,
-                Cursor = Cursors.Hand
-            };
-            button.FlatAppearance.BorderColor = accent;
-            button.FlatAppearance.MouseOverBackColor = Color.FromArgb(245, 246, 247);
-            return button;
-        }
-
         private Panel CreateMainContent()
         {
             Panel content = new Panel { Dock = DockStyle.Fill, BackColor = WindowBackground };
@@ -275,34 +237,13 @@ namespace RDPManager
             Panel sidebar = new Panel
             {
                 Dock = DockStyle.Left,
-                Width = 238,
+                Width = 370,
                 BackColor = SidebarBackground,
-                Padding = new Padding(10, 10, 8, 10)
+                Padding = new Padding(0)
             };
-            Label caption = new Label
-            {
-                Dock = DockStyle.Top,
-                Height = 30,
-                Text = "实时状态",
-                ForeColor = TextColor,
-                Font = new Font("Microsoft YaHei UI", 10F, FontStyle.Bold),
-                Padding = new Padding(4, 2, 0, 0)
-            };
-            serverStatusList = new ListBox
-            {
-                Dock = DockStyle.Fill,
-                BorderStyle = BorderStyle.FixedSingle,
-                BackColor = SidebarBackground,
-                ForeColor = TextColor,
-                IntegralHeight = false,
-                ItemHeight = 48,
-                DrawMode = DrawMode.OwnerDrawFixed,
-                Font = new Font("Microsoft YaHei UI", 9F)
-            };
-            serverStatusList.DrawItem += DrawStatusItem;
-            serverStatusList.SelectedIndexChanged += ServerStatusList_SelectedIndexChanged;
-            sidebar.Controls.Add(serverStatusList);
-            sidebar.Controls.Add(caption);
+            resourcePanel = new ServerResourcePanel { Dock = DockStyle.Fill };
+            resourcePanel.RefreshRequested += async (sender, args) => await RefreshSelectedServerResourcesAsync(true);
+            sidebar.Controls.Add(resourcePanel);
             return sidebar;
         }
 
@@ -315,15 +256,13 @@ namespace RDPManager
                 Padding = new Padding(10, 10, 10, 10)
             };
             serverGrid = CreateServerGrid();
-            Panel detailBar = CreateDetailBar();
             Panel actionBar = CreateActionBar();
             Panel bottom = new Panel
             {
                 Dock = DockStyle.Bottom,
-                Height = 98,
+                Height = 60,
                 BackColor = WindowBackground
             };
-            bottom.Controls.Add(detailBar);
             bottom.Controls.Add(actionBar);
             workspace.Controls.Add(serverGrid);
             workspace.Controls.Add(bottom);
@@ -372,17 +311,17 @@ namespace RDPManager
             };
             grid.AlternatingRowsDefaultCellStyle = new DataGridViewCellStyle { BackColor = Color.FromArgb(251, 252, 252) };
 
-            AddGridColumn(grid, "status", "状态", 115);
-            AddGridColumn(grid, "name", "名称", 172, DataGridViewAutoSizeColumnMode.Fill);
-            AddGridColumn(grid, "type", "方式", 70);
-            AddGridColumn(grid, "endpoint", "地址", 160);
-            AddGridColumn(grid, "user", "账号", 120);
-            AddGridColumn(grid, "group", "分组", 100);
-            AddGridColumn(grid, "provider", "厂商", 90);
-            AddGridColumn(grid, "expire", "到期", 108);
-            AddGridColumn(grid, "checked", "检测", 84);
+            AddGridColumn(grid, "status", "状态", 96);
+            AddGridColumn(grid, "name", "名称", 138);
+            AddGridColumn(grid, "type", "方式", 64);
+            AddGridColumn(grid, "endpoint", "地址", 132);
+            AddGridColumn(grid, "user", "账号", 112);
+            AddGridColumn(grid, "provider", "厂商", 84);
+            AddGridColumn(grid, "expire", "到期", 100);
+            AddGridColumn(grid, "remark", "备注", 140, DataGridViewAutoSizeColumnMode.Fill);
+            AddGridColumn(grid, "checked", "检测", 64);
 
-            grid.SelectionChanged += (sender, args) => UpdateSelectionInfo();
+            grid.SelectionChanged += ServerGrid_SelectionChanged;
             grid.CellDoubleClick += (sender, args) => ConnectSelectedServer();
             grid.CellMouseDown += ServerGrid_CellMouseDown;
             grid.KeyDown += ServerGrid_KeyDown;
@@ -405,28 +344,6 @@ namespace RDPManager
             });
         }
 
-        private Panel CreateDetailBar()
-        {
-            Panel detail = new Panel
-            {
-                Dock = DockStyle.Bottom,
-                Height = 38,
-                BackColor = Surface,
-                BorderStyle = BorderStyle.FixedSingle,
-                Padding = new Padding(10, 0, 10, 0)
-            };
-            selectionInfo = new Label
-            {
-                Dock = DockStyle.Fill,
-                TextAlign = ContentAlignment.MiddleLeft,
-                ForeColor = TextColor,
-                AutoEllipsis = true,
-                Text = "未选择服务器"
-            };
-            detail.Controls.Add(selectionInfo);
-            return detail;
-        }
-
         private Panel CreateActionBar()
         {
             Panel actionBar = new Panel
@@ -438,7 +355,6 @@ namespace RDPManager
             };
             addButton = CreateActionButton("添加服务器", Green, true, 112);
             connectButton = CreateActionButton("连接", Green, true, 78);
-            editButton = CreateActionButton("编辑", Blue, false, 78);
             restartButton = CreateActionButton("重启", Orange, false, 78);
             portButton = CreateActionButton("端口管理", Blue, false, 96);
             refreshButton = CreateActionButton("刷新状态", Blue, false, 96);
@@ -454,7 +370,6 @@ namespace RDPManager
             };
             flow.Controls.Add(addButton);
             flow.Controls.Add(connectButton);
-            flow.Controls.Add(editButton);
             flow.Controls.Add(restartButton);
             flow.Controls.Add(portButton);
             flow.Controls.Add(refreshButton);
@@ -463,7 +378,6 @@ namespace RDPManager
             flow.Controls.Add(databaseButton);
             addButton.Click += BtnAdd_Click;
             connectButton.Click += (sender, args) => ConnectSelectedServer();
-            editButton.Click += BtnEdit_Click;
             restartButton.Click += (sender, args) => ExecutePowerAction(true);
             portButton.Click += (sender, args) => OpenPortManagement();
             refreshButton.Click += async (sender, args) => await RefreshServerStatusAsync();
@@ -574,55 +488,7 @@ namespace RDPManager
 
         private void RefreshServerStatusList()
         {
-            if (serverStatusList == null)
-                return;
-
-            Server selected = GetSelectedServer();
-            updatingStatusList = true;
-            serverStatusList.BeginUpdate();
-            serverStatusList.Items.Clear();
-            foreach (Server server in servers)
-                serverStatusList.Items.Add(new ServerStatusItem(server, GetProbe(server)));
-            if (selected != null)
-                SelectStatusItem(selected);
-            else if (serverStatusList.Items.Count > 0)
-                serverStatusList.SelectedIndex = 0;
-            serverStatusList.EndUpdate();
-            updatingStatusList = false;
-            serverStatusList.Invalidate();
-        }
-
-        private void SelectStatusItem(Server server)
-        {
-            for (int i = 0; i < serverStatusList.Items.Count; i++)
-            {
-                ServerStatusItem item = serverStatusList.Items[i] as ServerStatusItem;
-                if (item != null && ReferenceEquals(item.Server, server))
-                {
-                    bool previousState = updatingStatusList;
-                    updatingStatusList = true;
-                    serverStatusList.SelectedIndex = i;
-                    updatingStatusList = previousState;
-                    return;
-                }
-            }
-        }
-
-        private void ServerStatusList_SelectedIndexChanged(object sender, EventArgs e)
-        {
-            if (updatingStatusList || serverStatusList.SelectedItem == null)
-                return;
-            ServerStatusItem item = serverStatusList.SelectedItem as ServerStatusItem;
-            if (item != null)
-            {
-                if (activeMetric != "all")
-                {
-                    activeMetric = "all";
-                    RefreshMetricBar();
-                    RefreshGrid();
-                }
-                SelectServer(item.Server);
-            }
+            HandleResourceSelectionChanged();
         }
 
         private void RefreshGrid()
@@ -633,34 +499,43 @@ namespace RDPManager
             Server selected = GetSelectedServer();
             List<Server> visible = ApplyFilters().ToList();
             bool keepSelection = selected != null && visible.Contains(selected);
+            rebuildingGrid = true;
             serverGrid.SuspendLayout();
-            serverGrid.Rows.Clear();
-            for (int index = 0; index < visible.Count; index++)
+            try
             {
-                Server server = visible[index];
-                ServerProbeResult probe = GetProbe(server);
-                int rowIndex = serverGrid.Rows.Add(
-                    probe.DisplayText,
-                    server.Name,
-                    server.Type == ServerType.Windows ? "RDP" : "SSH",
-                    GetEndpoint(server, !showFullIP),
-                    EmptyAsDash(server.Username),
-                    EmptyAsDash(server.Group),
-                    EmptyAsDash(server.Provider),
-                    server.ExpireDate == DateTime.MinValue ? "未设置" : server.GetExpireInfo(),
-                    probe.CheckedAt == DateTime.MinValue ? "-" : probe.CheckedAt.ToString("HH:mm:ss"));
-                DataGridViewRow row = serverGrid.Rows[rowIndex];
-                row.Tag = server;
-                FormatGridRow(row, server, probe);
-                if ((keepSelection && ReferenceEquals(server, selected)) || (!keepSelection && index == 0))
+                serverGrid.Rows.Clear();
+                for (int index = 0; index < visible.Count; index++)
                 {
-                    row.Selected = true;
-                    serverGrid.CurrentCell = row.Cells["name"];
+                    Server server = visible[index];
+                    ServerProbeResult probe = GetProbe(server);
+                    int rowIndex = serverGrid.Rows.Add(
+                        probe.CompactDisplayText,
+                        server.Name,
+                        server.Type == ServerType.Windows ? "RDP" : "SSH",
+                        GetEndpoint(server, !showFullIP),
+                        EmptyAsDash(server.Username),
+                        EmptyAsDash(server.Provider),
+                        server.ExpireDate == DateTime.MinValue ? "未设置" : server.GetExpireInfo(),
+                        EmptyAsDash(server.Remark),
+                        GetProbeCheckText(probe));
+                    DataGridViewRow row = serverGrid.Rows[rowIndex];
+                    row.Tag = server;
+                    FormatGridRow(row, server, probe);
+                    if ((keepSelection && ReferenceEquals(server, selected)) || (!keepSelection && index == 0))
+                    {
+                        row.Selected = true;
+                        serverGrid.CurrentCell = row.Cells["name"];
+                    }
                 }
             }
-            serverGrid.ResumeLayout();
-            UpdateSelectionInfo();
+            finally
+            {
+                serverGrid.ResumeLayout();
+                rebuildingGrid = false;
+            }
+            UpdateSelectionActions();
             UpdateStatusBar();
+            HandleResourceSelectionChanged();
         }
 
         private void FormatGridRow(DataGridViewRow row, Server server, ServerProbeResult probe)
@@ -669,7 +544,14 @@ namespace RDPManager
             row.Cells["status"].Style.ForeColor = GetProbeColor(probe);
             row.Cells["status"].Style.SelectionBackColor = GetProbeBackColor(probe);
             row.Cells["status"].Style.SelectionForeColor = GetProbeColor(probe);
+            row.Cells["status"].Style.Alignment = DataGridViewContentAlignment.MiddleCenter;
+            row.Cells["status"].Style.WrapMode = DataGridViewTriState.False;
+            row.Cells["status"].Style.Padding = new Padding(2, 0, 2, 0);
             row.Cells["expire"].Style.ForeColor = server.GetExpireColor();
+            row.Cells["checked"].Style.ForeColor = GetProbeCheckColor(probe);
+            row.Cells["checked"].Style.Alignment = DataGridViewContentAlignment.MiddleCenter;
+            row.Cells["checked"].Style.Padding = new Padding(0);
+            row.Cells["remark"].ToolTipText = EmptyAsDash(server.Remark);
         }
 
         private void ServerGrid_CellFormatting(object sender, DataGridViewCellFormattingEventArgs e)
@@ -686,10 +568,21 @@ namespace RDPManager
                 e.CellStyle.ForeColor = GetProbeColor(probe);
                 e.CellStyle.SelectionBackColor = GetProbeBackColor(probe);
                 e.CellStyle.SelectionForeColor = GetProbeColor(probe);
+                e.CellStyle.Alignment = DataGridViewContentAlignment.MiddleCenter;
+                e.CellStyle.WrapMode = DataGridViewTriState.False;
+                e.CellStyle.Padding = new Padding(2, 0, 2, 0);
             }
             else if (e.ColumnIndex == serverGrid.Columns["expire"].Index)
             {
                 e.CellStyle.ForeColor = server.GetExpireColor();
+            }
+            else if (e.ColumnIndex == serverGrid.Columns["checked"].Index)
+            {
+                e.Value = GetProbeCheckText(probe);
+                e.CellStyle.ForeColor = GetProbeCheckColor(probe);
+                e.CellStyle.Alignment = DataGridViewContentAlignment.MiddleCenter;
+                e.CellStyle.Padding = new Padding(0);
+                e.FormattingApplied = true;
             }
         }
 
@@ -713,34 +606,136 @@ namespace RDPManager
             return result;
         }
 
-        private void UpdateSelectionInfo()
+        private void UpdateSelectionActions()
         {
             Server server = GetSelectedServer();
             bool operationIdle = !operationRunning;
             connectButton.Enabled = operationIdle && server != null;
-            editButton.Enabled = operationIdle && server != null;
             restartButton.Enabled = operationIdle && server != null;
             portButton.Enabled = operationIdle && server != null;
-            moreButton.Enabled = operationIdle && server != null;
+            moreButton.Enabled = operationIdle;
             databaseButton.Enabled = operationIdle && server != null;
+        }
 
-            if (server == null)
+        private void ServerGrid_SelectionChanged(object sender, EventArgs e)
+        {
+            if (rebuildingGrid)
+                return;
+            UpdateSelectionActions();
+            HandleResourceSelectionChanged();
+        }
+
+        private void HandleResourceSelectionChanged(bool force = false)
+        {
+            Server selected = GetSelectedServer();
+            if (!force && ReferenceEquals(resourceMonitorSelection, selected))
+                return;
+
+            resourceMonitorSelection = selected;
+            CancelResourceMonitoring();
+            if (selected == null)
             {
-                selectionInfo.Text = "未选择服务器";
-                selectionInfo.ForeColor = MutedColor;
+                resourcePanel?.ShowIdle();
                 return;
             }
 
-            ServerProbeResult probe = GetProbe(server);
-            selectionInfo.Text = string.Format("{0}   {1}   {2}   账号：{3}   分组：{4}   备注：{5}",
-                server.Name,
-                probe.DisplayText,
-                GetEndpoint(server, !showFullIP),
-                EmptyAsDash(server.Username),
-                EmptyAsDash(server.Group),
-                EmptyAsDash(server.Remark));
-            selectionInfo.ForeColor = GetProbeColor(probe);
-            SelectStatusItem(server);
+            if (!resourceMonitoringReady)
+            {
+                resourcePanel?.ShowUnavailable(selected, "等待读取资源信息");
+                return;
+            }
+
+            _ = RefreshSelectedServerResourcesAsync(false);
+        }
+
+        private async Task RefreshSelectedServerResourcesAsync(bool requestCredentials)
+        {
+            Server server = GetSelectedServer();
+            if (server == null || resourcePanel == null)
+            {
+                resourcePanel?.ShowIdle();
+                return;
+            }
+
+            string password = GetServerPassword(server);
+            bool privateKey = server.Type == ServerType.Linux && server.SshCredentialMode == SshCredentialMode.PrivateKey;
+            if (privateKey)
+            {
+                if (string.IsNullOrWhiteSpace(server.SshPrivateKeyPath) || !File.Exists(server.SshPrivateKeyPath))
+                {
+                    resourcePanel.ShowUnavailable(server, "SSH 私钥不可用");
+                    return;
+                }
+                if (requestCredentials && !EnsurePrivateKeyReady(server))
+                    return;
+            }
+            else if (string.IsNullOrEmpty(password))
+            {
+                if (!requestCredentials)
+                {
+                    resourcePanel.ShowUnavailable(server, "缺少管理密码，点击刷新后输入");
+                    return;
+                }
+                if (!EnsureServerPassword(server, ref password))
+                    return;
+            }
+
+            CancelResourceMonitoring();
+            CancellationTokenSource cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(55));
+            resourceMonitorCancellation = cancellation;
+            int requestId = ++resourceMonitorRequestId;
+            resourcePanel.ShowLoading(server, 4, "准备读取资源");
+            Progress<ResourceCollectionProgress> progress = new Progress<ResourceCollectionProgress>(value =>
+            {
+                if (requestId == resourceMonitorRequestId && ReferenceEquals(server, GetSelectedServer()))
+                    resourcePanel.UpdateProgress(value.Percentage, value.Message);
+            });
+
+            try
+            {
+                ServerResourceSnapshot snapshot = await resourceMonitorService.CollectAsync(server, password, progress, cancellation.Token);
+                if (requestId != resourceMonitorRequestId || !ReferenceEquals(server, GetSelectedServer()))
+                    return;
+
+                List<NetworkRateSample> history;
+                if (!networkHistories.TryGetValue(server, out history))
+                {
+                    history = new List<NetworkRateSample>();
+                    networkHistories[server] = history;
+                }
+                history.AddRange(snapshot.NetworkSamples ?? new List<NetworkRateSample>());
+                if (history.Count > 30)
+                    history.RemoveRange(0, history.Count - 30);
+                snapshot.NetworkSamples = history.ToList();
+                resourcePanel.ShowSnapshot(snapshot);
+            }
+            catch (OperationCanceledException)
+            {
+                if (requestId == resourceMonitorRequestId && ReferenceEquals(server, GetSelectedServer()))
+                    resourcePanel.ShowUnavailable(server, "资源读取已取消或超时");
+            }
+            catch (Exception ex)
+            {
+                if (requestId == resourceMonitorRequestId && ReferenceEquals(server, GetSelectedServer()))
+                    resourcePanel.ShowError(server, SanitizeError(ex.Message));
+            }
+            finally
+            {
+                if (ReferenceEquals(resourceMonitorCancellation, cancellation))
+                    resourceMonitorCancellation = null;
+                cancellation.Dispose();
+            }
+        }
+
+        private void CancelResourceMonitoring()
+        {
+            resourceMonitorRequestId++;
+            CancellationTokenSource cancellation = resourceMonitorCancellation;
+            resourceMonitorCancellation = null;
+            if (cancellation == null)
+                return;
+            try { cancellation.Cancel(); }
+            catch (ObjectDisposedException) { }
         }
 
         private void UpdateStatusBar()
@@ -756,7 +751,7 @@ namespace RDPManager
 
             refreshing = true;
             refreshButton.Enabled = false;
-            lastUpdateLabel.Text = "正在检测...";
+            probeStatusIndicator.SetChecking();
             try
             {
                 Task<KeyValuePair<Server, ServerProbeResult>>[] tasks = servers.Select(async server =>
@@ -764,7 +759,12 @@ namespace RDPManager
                 KeyValuePair<Server, ServerProbeResult>[] results = await Task.WhenAll(tasks);
                 foreach (KeyValuePair<Server, ServerProbeResult> result in results)
                     probes[result.Key] = result.Value;
-                lastUpdateLabel.Text = "刚刚检测完成";
+                probeStatusIndicator.SetCompleted();
+            }
+            catch (Exception ex)
+            {
+                probeStatusIndicator.SetFailed();
+                statusBarLabel.Text = "服务器延迟检测失败：" + SanitizeError(ex.Message);
             }
             finally
             {
@@ -809,9 +809,14 @@ namespace RDPManager
 
                 int index = servers.IndexOf(original);
                 ServerProbeResult probe = GetProbe(original);
+                List<NetworkRateSample> history;
+                networkHistories.TryGetValue(original, out history);
                 servers[index] = form.Server;
                 probes.Remove(original);
                 probes[form.Server] = probe;
+                networkHistories.Remove(original);
+                if (history != null)
+                    networkHistories[form.Server] = history;
                 SaveServerData();
                 RefreshMetricBar();
                 RefreshServerStatusList();
@@ -1000,7 +1005,7 @@ namespace RDPManager
             ipShownAt = DateTime.Now;
             showIpButton.Text = "隐藏 IP";
             RefreshGrid();
-            UpdateSelectionInfo();
+            UpdateSelectionActions();
         }
 
         private void HideIP()
@@ -1008,7 +1013,7 @@ namespace RDPManager
             showFullIP = false;
             showIpButton.Text = "显示 IP";
             RefreshGrid();
-            UpdateSelectionInfo();
+            UpdateSelectionActions();
         }
 
         private bool EnsureAdminVerified(string prompt)
@@ -1123,6 +1128,7 @@ namespace RDPManager
                 CredentialStore.Delete(CredentialStore.GetServerTarget(server.CredentialId));
                 servers.Remove(server);
                 probes.Remove(server);
+                networkHistories.Remove(server);
                 SaveServerData();
                 RefreshMetricBar();
                 RefreshServerStatusList();
@@ -1308,7 +1314,7 @@ namespace RDPManager
                 operationRunning = false;
                 RefreshGrid();
                 RefreshServerStatusList();
-                UpdateSelectionInfo();
+                UpdateSelectionActions();
             }
         }
 
@@ -1380,7 +1386,7 @@ namespace RDPManager
                 if (server.Type == ServerType.Linux)
                     server.SudoPassword = null;
                 operationRunning = false;
-                UpdateSelectionInfo();
+                UpdateSelectionActions();
             }
         }
 
@@ -1439,7 +1445,7 @@ namespace RDPManager
                 if (server.Type == ServerType.Linux)
                     server.SudoPassword = null;
                 operationRunning = false;
-                UpdateSelectionInfo();
+                UpdateSelectionActions();
             }
         }
 
@@ -1516,7 +1522,7 @@ namespace RDPManager
             }
             RefreshServerStatusList();
             RefreshGrid();
-            UpdateSelectionInfo();
+            UpdateSelectionActions();
         }
 
         private async Task RunRestartOperationAsync(
@@ -1762,7 +1768,7 @@ namespace RDPManager
             return "'" + (value ?? "").Replace("'", "'\\''") + "'";
         }
 
-        private ContextMenuStrip CreateServerContextMenu(bool forButton = false)
+        private ContextMenuStrip CreateServerContextMenu()
         {
             ContextMenuStrip menu = new ContextMenuStrip();
             ToolStripMenuItem connect = new ToolStripMenuItem("连接");
@@ -1773,7 +1779,6 @@ namespace RDPManager
             ToolStripMenuItem provider = new ToolStripMenuItem("打开厂商网站");
             ToolStripMenuItem restart = new ToolStripMenuItem("重启服务器");
             ToolStripMenuItem portManagement = new ToolStripMenuItem("服务端口管理");
-            ToolStripMenuItem changePassword = new ToolStripMenuItem("修改管理密码");
             ToolStripMenuItem delete = new ToolStripMenuItem("删除服务器") { ForeColor = Red };
 
             connect.Click += (sender, args) => ConnectSelectedServer();
@@ -1784,7 +1789,6 @@ namespace RDPManager
             provider.Click += (sender, args) => OpenProviderWebsite();
             restart.Click += (sender, args) => ExecutePowerAction(true);
             portManagement.Click += (sender, args) => OpenPortManagement();
-            changePassword.Click += (sender, args) => ChangeAdminPassword();
             delete.Click += (sender, args) => DeleteSelectedServer();
 
             menu.Items.Add(connect);
@@ -1798,7 +1802,6 @@ namespace RDPManager
             menu.Items.Add(restart);
             menu.Items.Add(portManagement);
             menu.Items.Add(new ToolStripSeparator());
-            menu.Items.Add(changePassword);
             menu.Items.Add(delete);
             menu.Opening += (sender, args) =>
             {
@@ -1819,7 +1822,14 @@ namespace RDPManager
 
         private void ShowMoreMenu()
         {
-            ContextMenuStrip menu = CreateServerContextMenu(true);
+            ContextMenuStrip menu = new ContextMenuStrip();
+            ToolStripMenuItem changeAdminPassword = new ToolStripMenuItem("修改管理密码");
+            ToolStripMenuItem resetAdminPassword = new ToolStripMenuItem("重置管理密码") { ForeColor = Red };
+            changeAdminPassword.Click += (sender, args) => ChangeAdminPassword();
+            resetAdminPassword.Click += (sender, args) => ResetAdminPassword();
+            menu.Items.Add(changeAdminPassword);
+            menu.Items.Add(resetAdminPassword);
+            menu.Closed += (sender, args) => menu.Dispose();
             menu.Show(moreButton, new Point(0, -menu.PreferredSize.Height));
         }
 
@@ -1900,28 +1910,6 @@ namespace RDPManager
             }
         }
 
-        private void DrawStatusItem(object sender, DrawItemEventArgs e)
-        {
-            if (e.Index < 0)
-                return;
-            ServerStatusItem item = (ServerStatusItem)serverStatusList.Items[e.Index];
-            bool selected = (e.State & DrawItemState.Selected) == DrawItemState.Selected;
-            using (SolidBrush brush = new SolidBrush(selected ? Color.FromArgb(215, 232, 222) : SidebarBackground))
-                e.Graphics.FillRectangle(brush, e.Bounds);
-
-            Color statusColor = GetProbeColor(item.Probe);
-            using (SolidBrush brush = new SolidBrush(statusColor))
-                e.Graphics.FillEllipse(brush, e.Bounds.Left + 10, e.Bounds.Top + 15, 10, 10);
-            using (SolidBrush brush = new SolidBrush(TextColor))
-                e.Graphics.DrawString(item.Server.Name, e.Font, brush, e.Bounds.Left + 28, e.Bounds.Top + 6);
-            using (SolidBrush brush = new SolidBrush(MutedColor))
-                e.Graphics.DrawString(item.Server.Type == ServerType.Windows ? "RDP" : "SSH", e.Font, brush, e.Bounds.Left + 28, e.Bounds.Top + 27);
-            using (SolidBrush brush = new SolidBrush(statusColor))
-                e.Graphics.DrawString(item.Probe.DisplayText, e.Font, brush, e.Bounds.Left + 72, e.Bounds.Top + 27);
-            using (Pen pen = new Pen(Color.FromArgb(211, 216, 220)))
-                e.Graphics.DrawLine(pen, e.Bounds.Left + 10, e.Bounds.Bottom - 1, e.Bounds.Right - 10, e.Bounds.Bottom - 1);
-        }
-
         private static bool Contains(string value, string query)
         {
             return !string.IsNullOrEmpty(value) && value.IndexOf(query, StringComparison.CurrentCultureIgnoreCase) >= 0;
@@ -1979,6 +1967,20 @@ namespace RDPManager
             return Color.FromArgb(250, 231, 231);
         }
 
+        private static string GetProbeCheckText(ServerProbeResult result)
+        {
+            if (result == null || result.CheckedAt == DateTime.MinValue)
+                return "待检测";
+            return result.IsServiceAvailable ? "成功" : "失败";
+        }
+
+        private static Color GetProbeCheckColor(ServerProbeResult result)
+        {
+            if (result == null || result.CheckedAt == DateTime.MinValue)
+                return MutedColor;
+            return result.IsServiceAvailable ? Color.FromArgb(35, 153, 93) : Red;
+        }
+
         private static string EmptyAsDash(string value)
         {
             return string.IsNullOrWhiteSpace(value) ? "-" : value;
@@ -2010,7 +2012,7 @@ namespace RDPManager
         {
             try
             {
-                using (Stream stream = typeof(MainForm).Assembly.GetManifestResourceStream("RDPManager.favicon.ico"))
+                using (Stream stream = typeof(MainForm).Assembly.GetManifestResourceStream("ServerForge.favicon.ico"))
                 {
                     if (stream != null)
                         Icon = new Icon(stream);
@@ -2021,6 +2023,7 @@ namespace RDPManager
 
         protected override void OnFormClosing(FormClosingEventArgs e)
         {
+            CancelResourceMonitoring();
             uiTimer?.Stop();
             refreshTimer?.Stop();
             uiTimer?.Dispose();
@@ -2028,20 +2031,144 @@ namespace RDPManager
             base.OnFormClosing(e);
         }
 
-        private sealed class ServerStatusItem
+        private sealed class ProbeStatusIndicator : Control
         {
-            public Server Server { get; }
-            public ServerProbeResult Probe { get; }
-
-            public ServerStatusItem(Server server, ServerProbeResult probe)
+            private enum IndicatorState
             {
-                Server = server;
-                Probe = probe;
+                Idle,
+                Checking,
+                Completed,
+                Failed
             }
 
-            public override string ToString()
+            private readonly System.Windows.Forms.Timer animationTimer;
+            private IndicatorState state = IndicatorState.Idle;
+            private int angle;
+
+            public ProbeStatusIndicator()
             {
-                return Server.Name;
+                DoubleBuffered = true;
+                BackColor = WindowBackground;
+                SetStyle(ControlStyles.ResizeRedraw, true);
+                animationTimer = new System.Windows.Forms.Timer { Interval = 55 };
+                animationTimer.Tick += (sender, args) =>
+                {
+                    angle = (angle + 14) % 360;
+                    Invalidate();
+                };
+            }
+
+            public void SetChecking()
+            {
+                state = IndicatorState.Checking;
+                angle = 0;
+                animationTimer.Start();
+                Invalidate();
+            }
+
+            public void SetCompleted()
+            {
+                SetState(IndicatorState.Completed);
+            }
+
+            public void SetFailed()
+            {
+                SetState(IndicatorState.Failed);
+            }
+
+            private void SetState(IndicatorState newState)
+            {
+                state = newState;
+                animationTimer.Stop();
+                Invalidate();
+            }
+
+            protected override void Dispose(bool disposing)
+            {
+                if (disposing)
+                    animationTimer.Dispose();
+                base.Dispose(disposing);
+            }
+
+            protected override void OnPaint(PaintEventArgs e)
+            {
+                base.OnPaint(e);
+                e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+
+                string text = state == IndicatorState.Checking
+                    ? "正在检测延迟"
+                    : state == IndicatorState.Completed
+                        ? "延迟检测完成"
+                        : state == IndicatorState.Failed
+                            ? "延迟检测失败"
+                            : "等待检测";
+                Color color = state == IndicatorState.Checking
+                    ? Blue
+                    : state == IndicatorState.Completed
+                        ? Green
+                        : state == IndicatorState.Failed
+                            ? Red
+                            : MutedColor;
+
+                const int iconSize = 18;
+                const int gap = 6;
+                using (Font statusFont = new Font("Microsoft YaHei UI", 8F, FontStyle.Bold))
+                {
+                    Size textSize = TextRenderer.MeasureText(e.Graphics, text, statusFont, Size.Empty,
+                        TextFormatFlags.NoPadding | TextFormatFlags.SingleLine);
+                    int totalWidth = iconSize + gap + textSize.Width;
+                    int left = Math.Max(2, (Width - totalWidth) / 2);
+                    int top = Math.Max(1, (Height - iconSize) / 2);
+                    Rectangle icon = new Rectangle(left, top, iconSize, iconSize);
+
+                    if (state == IndicatorState.Checking)
+                    {
+                        using (Pen track = new Pen(Color.FromArgb(206, 214, 220), 2F))
+                        using (Pen active = new Pen(Blue, 2.5F))
+                        {
+                            e.Graphics.DrawEllipse(track, icon);
+                            e.Graphics.DrawArc(active, icon, angle, 110F);
+                        }
+                    }
+                    else if (state == IndicatorState.Completed)
+                    {
+                        using (SolidBrush fill = new SolidBrush(Green))
+                        using (Pen check = new Pen(Color.White, 2F))
+                        {
+                            e.Graphics.FillEllipse(fill, icon);
+                            e.Graphics.DrawLines(check, new[]
+                            {
+                                new PointF(icon.Left + 4F, icon.Top + 9F),
+                                new PointF(icon.Left + 8F, icon.Top + 13F),
+                                new PointF(icon.Left + 14F, icon.Top + 5F)
+                            });
+                        }
+                    }
+                    else if (state == IndicatorState.Failed)
+                    {
+                        using (SolidBrush fill = new SolidBrush(Red))
+                        using (Pen mark = new Pen(Color.White, 2F))
+                        {
+                            e.Graphics.FillEllipse(fill, icon);
+                            e.Graphics.DrawLine(mark, icon.Left + 9F, icon.Top + 4F, icon.Left + 9F, icon.Top + 10F);
+                            e.Graphics.DrawLine(mark, icon.Left + 9F, icon.Top + 13F, icon.Left + 9F, icon.Top + 14F);
+                        }
+                    }
+                    else
+                    {
+                        using (Pen outline = new Pen(MutedColor, 2F))
+                        using (SolidBrush dot = new SolidBrush(MutedColor))
+                        {
+                            e.Graphics.DrawEllipse(outline, icon);
+                            e.Graphics.FillEllipse(dot, icon.Left + 7F, icon.Top + 7F, 4F, 4F);
+                        }
+                    }
+
+                    Rectangle textArea = new Rectangle(left + iconSize + gap, 0,
+                        Math.Max(1, Width - left - iconSize - gap), Height);
+                    TextRenderer.DrawText(e.Graphics, text, statusFont, textArea, color,
+                        TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPadding);
+                }
             }
         }
 

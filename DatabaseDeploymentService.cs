@@ -11,7 +11,7 @@ using MongoDB.Bson;
 using MongoDB.Driver;
 using MySqlConnector;
 
-namespace RDPManager
+namespace ServerForge
 {
     public sealed class DatabaseDeploymentProgress
     {

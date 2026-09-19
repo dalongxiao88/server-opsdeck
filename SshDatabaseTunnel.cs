@@ -5,7 +5,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Renci.SshNet;
 
-namespace RDPManager
+namespace ServerForge
 {
     public sealed class SshDatabaseTunnel : IDisposable
     {

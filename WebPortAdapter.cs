@@ -3,7 +3,7 @@ using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 
-namespace RDPManager
+namespace ServerForge
 {
     public sealed class WebPortAdapter : IPortServiceAdapter
     {
@@ -80,7 +80,7 @@ $result | ConvertTo-Json -Compress
 
             string backupPath = Environment.GetFolderPath(Environment.SpecialFolder.Windows) +
                 "\\System32\\inetsrv\\config\\applicationHost.config.xiao-bai-backup";
-            string ruleName = "XiaoBai-Web-" + target.ServiceType + "-" + newPort + "-" + Guid.NewGuid().ToString("N").Substring(0, 8);
+            string ruleName = "ServerForge-Web-" + target.ServiceType + "-" + newPort + "-" + Guid.NewGuid().ToString("N").Substring(0, 8);
             string oldBinding = keyParts[2];
             string siteName = ExtractSiteName(keyParts[0]);
             string protocol = keyParts[1];

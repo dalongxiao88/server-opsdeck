@@ -1,7 +1,7 @@
 using System;
 using System.Collections.Generic;
 
-namespace RDPManager
+namespace ServerForge
 {
     public sealed class DetectedServicePort
     {

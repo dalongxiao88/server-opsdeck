@@ -8,7 +8,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using System.Text.Json;
 
-namespace RDPManager
+namespace ServerForge
 {
     public sealed class MySqlBackupRequest
     {
