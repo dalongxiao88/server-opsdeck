@@ -143,7 +143,8 @@ namespace ServerForge
                 "LastBootUpTime=$os.LastBootUpTime.ToUniversalTime().ToString('o') } | ConvertTo-Json -Compress";
             RemoteCommandResult result = await ExecutePowerShellAsync(script, TimeSpan.FromSeconds(90), cancellationToken);
             EnsureSuccess(result, "SSH 远程权限验证");
-            Dictionary<string, object> values = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, object>>(result.Output.Trim());
+            Dictionary<string, object> values = System.Text.Json.JsonSerializer.Deserialize(
+                result.Output.Trim(), ServerForgeJsonContext.Default.DictionaryStringObject);
             DateTime bootTime;
             if (values == null || !DateTime.TryParse(GetValue(values, "LastBootUpTime"), out bootTime))
                 throw new InvalidOperationException("SSH 返回的系统信息格式无法识别");

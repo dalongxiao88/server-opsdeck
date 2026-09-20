@@ -22,8 +22,8 @@ namespace ServerForge
 
     public static class StorageModePaths
     {
-        public const string PlainFileName = "servers.xml";
-        public const string VaultFileName = "servers.vault";
+        public static string PlainFileName => ProtectedText.PlainFileName;
+        public static string VaultFileName => ProtectedText.VaultFileName;
 
         public static string GetPlainPath(string baseDirectory)
         {

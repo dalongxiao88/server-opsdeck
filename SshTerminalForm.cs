@@ -416,15 +416,15 @@ namespace ServerForge
         {
             if (string.IsNullOrEmpty(value) || closing)
                 return;
-            SendToPage(new { type = "output", data = value });
+            SendToPage(new TerminalPageMessage { Type = "output", Data = value });
         }
 
         private void SendStatus(string value)
         {
-            SendToPage(new { type = "status", value });
+            SendToPage(new TerminalPageMessage { Type = "status", Value = value });
         }
 
-        private void SendToPage(object message)
+        private void SendToPage(TerminalPageMessage message)
         {
             if (!pageReady || closing)
                 return;
@@ -439,7 +439,8 @@ namespace ServerForge
 
                 if (webView.IsDisposed || webView.CoreWebView2 == null)
                     return;
-                webView.CoreWebView2.PostWebMessageAsString(JsonSerializer.Serialize(message));
+                webView.CoreWebView2.PostWebMessageAsString(JsonSerializer.Serialize(
+                    message, ServerForgeJsonContext.Default.TerminalPageMessage));
             }
             catch
             {
@@ -499,9 +500,9 @@ namespace ServerForge
 
         private static string BuildTerminalPage()
         {
-            string xterm = ReadResource("ServerForge.TerminalAssets.xterm.js");
-            string fit = ReadResource("ServerForge.TerminalAssets.xterm-addon-fit.js");
-            string css = ReadResource("ServerForge.TerminalAssets.xterm.css");
+            string xterm = ReadResource(ProtectedText.XtermResource);
+            string fit = ReadResource(ProtectedText.FitResource);
+            string css = ReadResource(ProtectedText.CssResource);
             return "<!doctype html><html><head><meta charset=\"utf-8\"><style>" + css +
                 "html,body,#terminal{width:100%;height:100%;margin:0;overflow:hidden;background:#14181c;}" +
                 ".xterm{height:100%;padding:10px 12px;box-sizing:border-box;}" +

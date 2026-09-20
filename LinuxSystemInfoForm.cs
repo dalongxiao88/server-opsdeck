@@ -177,7 +177,7 @@ namespace ServerForge
         {
             try
             {
-                using (System.IO.Stream stream = typeof(LinuxSystemInfoForm).Assembly.GetManifestResourceStream("ServerForge.favicon.ico"))
+                using (System.IO.Stream stream = typeof(LinuxSystemInfoForm).Assembly.GetManifestResourceStream(ProtectedText.IconResource))
                 {
                     if (stream != null)
                         Icon = new Icon(stream);

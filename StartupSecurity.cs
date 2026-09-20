@@ -73,7 +73,7 @@ namespace ServerForge
 
             DeleteIfExists(plainPath);
             DeleteIfExists(StorageModePaths.GetVaultPath(baseDirectory));
-            DeleteIfExists(Path.Combine(baseDirectory, "password.dat"));
+            DeleteIfExists(Path.Combine(baseDirectory, ProtectedText.LegacyPasswordFileName));
         }
 
         private static bool UnlockPlain(string baseDirectory, out StartupSession session)
@@ -156,7 +156,7 @@ namespace ServerForge
         private static bool UnlockLegacyOrFirstUse(string baseDirectory, out StartupSession session)
         {
             session = null;
-            string legacyPath = Path.Combine(baseDirectory, "password.dat");
+            string legacyPath = Path.Combine(baseDirectory, ProtectedText.LegacyPasswordFileName);
             string storedHash;
             bool firstRun;
             storedHash = AdminPasswordStore.LoadHash(legacyPath, out firstRun);
@@ -215,7 +215,7 @@ namespace ServerForge
                 PlainServerStorage.Save(StorageModePaths.GetPlainPath(baseDirectory), servers, hash);
                 DeleteLegacyServerCredentials();
                 CredentialStore.Delete(CredentialStore.AdminTarget);
-                DeleteIfExists(Path.Combine(baseDirectory, "password.dat"));
+                DeleteIfExists(Path.Combine(baseDirectory, ProtectedText.LegacyPasswordFileName));
                 session = new StartupSession { Mode = mode, Servers = servers, AdminPasswordHash = hash };
                 return true;
             }
@@ -226,7 +226,7 @@ namespace ServerForge
                 DeleteIfExists(StorageModePaths.GetPlainPath(baseDirectory));
             DeleteLegacyServerCredentials();
             CredentialStore.Delete(CredentialStore.AdminTarget);
-            DeleteIfExists(Path.Combine(baseDirectory, "password.dat"));
+            DeleteIfExists(Path.Combine(baseDirectory, ProtectedText.LegacyPasswordFileName));
             session = new StartupSession { Mode = mode, Servers = servers, AdminPasswordHash = hash, VaultKey = key, VaultSalt = salt };
             return true;
         }

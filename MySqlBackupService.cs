@@ -213,7 +213,8 @@ namespace ServerForge
                 throw new InvalidOperationException("远程备份没有返回文件信息");
             try
             {
-                RemoteDumpArtifact artifact = JsonSerializer.Deserialize<RemoteDumpArtifact>(output.Trim());
+                RemoteDumpArtifact artifact = JsonSerializer.Deserialize(
+                    output.Trim(), ServerForgeJsonContext.Default.RemoteDumpArtifact);
                 if (artifact == null || string.IsNullOrWhiteSpace(artifact.RemotePath) || artifact.Length <= 0 || string.IsNullOrWhiteSpace(artifact.Sha256))
                     throw new InvalidOperationException("远程备份文件信息不完整");
                 return artifact;

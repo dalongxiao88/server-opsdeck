@@ -9,7 +9,33 @@
     <Nullable>disable</Nullable>
     <RootNamespace>ServerForge</RootNamespace>
     <AssemblyName>ServerForge</AssemblyName>
+    <AssemblyTitle>ServerForge 服务器管理工具</AssemblyTitle>
+    <Description>ServerForge 服务器管理工具</Description>
+    <Product>ServerForge</Product>
+    <Authors>shisan8887（十三是小白）</Authors>
+    <Company>shisan8887@gmail.com</Company>
+    <Copyright>Copyright © 2026 shisan8887</Copyright>
+    <Version>2.1.1</Version>
+    <AssemblyVersion>2.1.1.0</AssemblyVersion>
+    <FileVersion>2.1.1.0</FileVersion>
+    <InformationalVersion>2.1.1</InformationalVersion>
+    <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
     <ApplicationIcon>favicon.ico</ApplicationIcon>
+  </PropertyGroup>
+
+  <!--
+    Opt-in protected distribution build. WinForms NativeAOT is not a fully
+    supported SDK scenario, so normal Release builds deliberately stay on the
+    regular managed publish path.
+  -->
+  <PropertyGroup Condition="'$(ServerForgeProtectedBuild)' == 'true'">
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <SelfContained>true</SelfContained>
+    <PublishAot>true</PublishAot>
+    <_SuppressWinFormsTrimError>true</_SuppressWinFormsTrimError>
+    <StripSymbols>true</StripSymbols>
+    <DebugType>None</DebugType>
+    <DebugSymbols>false</DebugSymbols>
   </PropertyGroup>
 
   <ItemGroup>
@@ -20,6 +46,11 @@
       <LogicalName>ServerForge.favicon.ico</LogicalName>
     </EmbeddedResource>
     <PackageReference Include="SSH.NET" Version="2026.0.0" />
+    <!-- 使用带 CLIPRDR 文件传输支持的定制 IronRDP 绑定。 -->
+    <Reference Include="Devolutions.IronRdp">
+      <HintPath>RdpNative\Devolutions.IronRdp.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
     <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.4191.47" />
     <PackageReference Include="MySqlConnector" Version="2.4.0" />
     <PackageReference Include="MongoDB.Driver" Version="3.11.1" />
@@ -28,5 +59,25 @@
     <EmbeddedResource Include="TerminalAssets\xterm-addon-fit.js" LogicalName="ServerForge.TerminalAssets.xterm-addon-fit.js" />
     <EmbeddedResource Include="TerminalAssets\xterm-LICENSE.txt" LogicalName="ServerForge.TerminalAssets.xterm-LICENSE.txt" />
     <EmbeddedResource Include="TerminalAssets\xterm-addon-fit-LICENSE.txt" LogicalName="ServerForge.TerminalAssets.xterm-addon-fit-LICENSE.txt" />
+  </ItemGroup>
+
+  <!-- Keep reflection-heavy integrations intact in the opt-in AOT build. -->
+  <ItemGroup Condition="'$(ServerForgeProtectedBuild)' == 'true'">
+    <TrimmerRootAssembly Include="Devolutions.IronRdp" />
+    <TrimmerRootAssembly Include="Microsoft.Web.WebView2.Core" />
+    <TrimmerRootAssembly Include="Microsoft.Web.WebView2.WinForms" />
+    <TrimmerRootAssembly Include="MongoDB.Bson" />
+    <TrimmerRootAssembly Include="MongoDB.Driver" />
+    <TrimmerRootAssembly Include="MySqlConnector" />
+    <TrimmerRootAssembly Include="Renci.SshNet" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- 普通构建复制到程序目录；单文件发布时由 .NET 主机内嵌并按需解压。 -->
+    <Content Include="RdpNative\DevolutionsIronRdp.dll">
+      <Link>DevolutionsIronRdp.dll</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+    </Content>
   </ItemGroup>
 </Project>

@@ -9,7 +9,7 @@ namespace ServerForge
 {
     public static class VaultStore
     {
-        private static readonly byte[] Magic = Encoding.ASCII.GetBytes("XIAOBAI_VAULT_1");
+        private static readonly byte[] Magic = Encoding.ASCII.GetBytes(ProtectedText.VaultMagic);
         private const int SaltSize = 16;
         private const int NonceSize = 12;
         private const int TagSize = 16;
@@ -49,7 +49,8 @@ namespace ServerForge
 
         private static void SaveEncrypted(string filePath, IEnumerable<Server> servers, byte[] key, byte[] salt, byte[] nonce)
         {
-            byte[] plain = JsonSerializer.SerializeToUtf8Bytes(new List<Server>(servers), new JsonSerializerOptions());
+            byte[] plain = JsonSerializer.SerializeToUtf8Bytes(
+                new List<Server>(servers), ServerForgeJsonContext.Default.ListServer);
             byte[] cipher = new byte[plain.Length];
             byte[] tag = new byte[TagSize];
             string temporaryPath = filePath + ".tmp-" + Guid.NewGuid().ToString("N");
@@ -114,7 +115,8 @@ namespace ServerForge
                     key = DeriveKey(password, salt);
                     using (AesGcm aes = new AesGcm(key, TagSize))
                         aes.Decrypt(nonce, cipher, tag, plain, Magic);
-                    List<Server> servers = JsonSerializer.Deserialize<List<Server>>(plain);
+                    List<Server> servers = JsonSerializer.Deserialize(
+                        plain, ServerForgeJsonContext.Default.ListServer);
                     if (servers == null)
                         throw new InvalidOperationException("保险库内容为空或格式无法识别");
                     foreach (Server server in servers)

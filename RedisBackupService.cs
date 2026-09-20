@@ -102,7 +102,8 @@ namespace ServerForge
                             cancellationToken);
                     if (copy.ExitCode != 0)
                         throw new InvalidOperationException("复制 Redis RDB 文件失败：" + RemoteErrorFormatter.Format(new RemoteCommandResult { ExitCode = copy.ExitCode, Output = copy.Output, Error = copy.Error }));
-                    RedisRemoteArtifact artifact = JsonSerializer.Deserialize<RedisRemoteArtifact>((copy.Output ?? "").Trim());
+                    RedisRemoteArtifact artifact = JsonSerializer.Deserialize(
+                        (copy.Output ?? "").Trim(), ServerForgeJsonContext.Default.RedisRemoteArtifact);
                     if (artifact == null || artifact.Length <= 0 || string.IsNullOrWhiteSpace(artifact.Sha256)) throw new InvalidOperationException("Redis RDB 文件信息不完整");
                     await client.DownloadAsync(sftpCopy, localPartial, bytes => progress?.Invoke((long)bytes), cancellationToken);
                     FileInfo file = new FileInfo(localPartial);

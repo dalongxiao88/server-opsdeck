@@ -26,12 +26,13 @@ namespace ServerForge
         private static readonly Color Orange = Color.FromArgb(210, 125, 26);
         private static readonly Color Red = Color.FromArgb(184, 62, 62);
 
-        private readonly string dataFile = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "servers.xml");
-        private readonly string vaultFile = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "servers.vault");
+        private readonly string dataFile = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, ProtectedText.PlainFileName);
+        private readonly string vaultFile = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, ProtectedText.VaultFileName);
         private readonly List<Server> servers = new List<Server>();
         private readonly Dictionary<Server, ServerProbeResult> probes = new Dictionary<Server, ServerProbeResult>();
         private readonly Dictionary<Server, List<NetworkRateSample>> networkHistories = new Dictionary<Server, List<NetworkRateSample>>();
         private readonly HashSet<SshTerminalForm> sshTerminals = new HashSet<SshTerminalForm>();
+        private readonly HashSet<RdpSessionForm> rdpSessions = new HashSet<RdpSessionForm>();
         private readonly ServerResourceMonitorService resourceMonitorService = new ServerResourceMonitorService();
 
         private const int PasswordValidMinutes = 120;
@@ -935,43 +936,20 @@ namespace ServerForge
         {
             try
             {
-                string rdpFile = Path.Combine(Path.GetTempPath(), "rdp_manager_" + Guid.NewGuid().ToString("N") + ".rdp");
-                string content = string.Join(Environment.NewLine, new[]
+                RdpSessionForm session = new RdpSessionForm(server, password);
+                session.FormClosed += (sender, args) => rdpSessions.Remove(session);
+                rdpSessions.Add(session);
+                try
                 {
-                    "full address:s:" + server.IP + ":" + server.Port,
-                    "username:s:" + server.Username,
-                    "prompt for credentials:i:0",
-                    "screen mode id:i:2",
-                    "session bpp:i:32",
-                    "compression:i:1",
-                    "networkautodetect:i:1",
-                    "bandwidthautodetect:i:1",
-                    "redirectclipboard:i:1",
-                    "redirectprinters:i:0",
-                    "autoreconnection enabled:i:1"
-                });
-                File.WriteAllText(rdpFile, content, System.Text.Encoding.Unicode);
-
-                ProcessStartInfo credential = new ProcessStartInfo("cmdkey.exe")
+                    session.Show();
+                }
+                catch
                 {
-                    UseShellExecute = false,
-                    CreateNoWindow = true
-                };
-                credential.ArgumentList.Add("/generic:TERMSRV/" + server.IP);
-                credential.ArgumentList.Add("/user:" + server.Username);
-                credential.ArgumentList.Add("/pass:" + password);
-                using (Process process = Process.Start(credential))
-                    process.WaitForExit();
-
-                Process.Start(new ProcessStartInfo("mstsc.exe")
-                {
-                    UseShellExecute = true,
-                    Arguments = "\"" + rdpFile + "\""
-                });
-                Task.Delay(5000).ContinueWith(task =>
-                {
-                    try { File.Delete(rdpFile); } catch { }
-                });
+                    rdpSessions.Remove(session);
+                    session.Dispose();
+                    throw;
+                }
+                statusBarLabel.Text = "已打开独立 RDP 会话";
             }
             catch (Exception ex)
             {
@@ -1576,7 +1554,8 @@ namespace ServerForge
                         }
                         window.SetProgress("正在发送 Linux 重启命令", GetTransportDisplayName(transport, managementPort) + " 已连接，正在验证管理员权限...", 28, Blue, true);
                         string rebootCommand = before.HasSystemd ? "systemctl reboot" : "shutdown -r now";
-                        string detached = "nohup sh -c 'sleep 2; " + rebootCommand + "' >/dev/null 2>&1 </dev/null & printf 'RESTART_COMMAND_ACCEPTED\\n'";
+                        string detached = "nohup sh -c 'sleep 2; " + rebootCommand +
+                            "' >/dev/null 2>&1 </dev/null & printf '" + ProtectedText.RestartMarker + "\\n'";
                         if (before.IsRoot)
                             restartResult = await executor.ExecuteCommandAsync(detached, TimeSpan.FromSeconds(25), cancellationToken);
                         else if (before.CanSudo)
@@ -1591,12 +1570,12 @@ namespace ServerForge
                             "$output = (& shutdown.exe /r /t 5 /f 2>&1 | Out-String).Trim(); " +
                             "$code = $LASTEXITCODE; " +
                             "if ($code -ne 0) { throw ('shutdown.exe 返回错误代码 ' + $code + ($(if ($output) { ': ' + $output } else { '' }))) }; " +
-                            "'RESTART_COMMAND_ACCEPTED'",
+                            "'" + ProtectedText.RestartMarker + "'",
                             TimeSpan.FromSeconds(25),
                             cancellationToken);
                     }
                     if (restartResult.ExitCode != 0 || string.IsNullOrWhiteSpace(restartResult.Output) ||
-                        restartResult.Output.IndexOf("RESTART_COMMAND_ACCEPTED", StringComparison.OrdinalIgnoreCase) < 0)
+                        restartResult.Output.IndexOf(ProtectedText.RestartMarker, StringComparison.OrdinalIgnoreCase) < 0)
                         throw new InvalidOperationException((server.Type == ServerType.Linux ? "Linux 重启命令" : "shutdown.exe") + " 未确认接受：" + SanitizeError(restartResult.Error ?? restartResult.Output));
                     window.SetStep(currentStep, OperationStepState.Completed, server.Type == ServerType.Linux ? "重启命令已接受" : "shutdown.exe 已接受");
                 }
@@ -2024,7 +2003,7 @@ namespace ServerForge
         {
             try
             {
-                using (Stream stream = typeof(MainForm).Assembly.GetManifestResourceStream("ServerForge.favicon.ico"))
+                using (Stream stream = typeof(MainForm).Assembly.GetManifestResourceStream(ProtectedText.IconResource))
                 {
                     if (stream != null)
                         Icon = new Icon(stream);
@@ -2042,6 +2021,12 @@ namespace ServerForge
                 catch { terminal.Dispose(); }
             }
             sshTerminals.Clear();
+            foreach (RdpSessionForm session in rdpSessions.ToArray())
+            {
+                try { session.Close(); }
+                catch { session.Dispose(); }
+            }
+            rdpSessions.Clear();
             uiTimer?.Stop();
             refreshTimer?.Stop();
             uiTimer?.Dispose();

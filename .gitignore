@@ -13,6 +13,8 @@ icon_compact_preview/
 发布包/
 *.exe
 *.dll
+!RdpNative/
+!RdpNative/*.dll
 *.pdb
 *.msi
 

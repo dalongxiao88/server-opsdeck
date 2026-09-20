@@ -10,7 +10,7 @@ namespace ServerForge
 {
     public sealed class ServerResourceMonitorService
     {
-        private const string WindowsPayloadMarker = "SERVERFORGE_RESOURCE_JSON:";
+        private static string WindowsPayloadMarker => ProtectedText.WindowsPayloadMarker;
         private const string LinuxPayloadBegin = "SERVERFORGE_RESOURCE_BEGIN";
         private const string LinuxPayloadEnd = "SERVERFORGE_RESOURCE_END";
 
@@ -192,10 +192,8 @@ printf '%s\n' 'SERVERFORGE_RESOURCE_END'
         private static ServerResourceSnapshot ParseWindowsSnapshot(string output)
         {
             string payload = ExtractMarkedLine(output, WindowsPayloadMarker);
-            ServerResourceSnapshot snapshot = JsonSerializer.Deserialize<ServerResourceSnapshot>(payload, new JsonSerializerOptions
-            {
-                PropertyNameCaseInsensitive = true
-            });
+            ServerResourceSnapshot snapshot = JsonSerializer.Deserialize(
+                payload, ServerForgeJsonContext.Default.ServerResourceSnapshot);
             if (snapshot == null)
                 throw new InvalidOperationException("Windows 未返回有效的资源数据");
             return snapshot;

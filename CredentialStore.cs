@@ -10,12 +10,12 @@ namespace ServerForge
     {
         private const uint GenericCredentialType = 1;
         private const uint LocalMachinePersistence = 2;
-        private const string Prefix = "XiaoBaiServerManager/";
-        public const string AdminTarget = Prefix + "AdminPassword";
+        private static string Prefix => ProtectedText.CredentialPrefix;
+        public static string AdminTarget => Prefix + ProtectedText.CredentialAdmin;
 
         public static string GetServerTarget(string credentialId)
         {
-            return Prefix + "Server/" + credentialId;
+            return Prefix + ProtectedText.CredentialServer + credentialId;
         }
 
         public static bool TryRead(string target, out string secret)
@@ -27,7 +27,7 @@ namespace ServerForge
 
             try
             {
-                CREDENTIAL credential = (CREDENTIAL)Marshal.PtrToStructure(credentialPointer, typeof(CREDENTIAL));
+                CREDENTIAL credential = Marshal.PtrToStructure<CREDENTIAL>(credentialPointer);
                 if (credential.CredentialBlob == IntPtr.Zero || credential.CredentialBlobSize == 0)
                     return true;
 
@@ -92,7 +92,7 @@ namespace ServerForge
         {
             IntPtr credentials;
             uint count;
-            if (!CredEnumerate(Prefix + "Server/*", 0, out count, out credentials))
+            if (!CredEnumerate(Prefix + ProtectedText.CredentialServerFilter, 0, out count, out credentials))
             {
                 int error = Marshal.GetLastWin32Error();
                 if (error == 1168)
@@ -105,7 +105,7 @@ namespace ServerForge
                 for (int index = 0; index < count; index++)
                 {
                     IntPtr itemPointer = Marshal.ReadIntPtr(credentials, index * IntPtr.Size);
-                    CREDENTIAL item = (CREDENTIAL)Marshal.PtrToStructure(itemPointer, typeof(CREDENTIAL));
+                    CREDENTIAL item = Marshal.PtrToStructure<CREDENTIAL>(itemPointer);
                     string target = item.TargetName == IntPtr.Zero ? null : Marshal.PtrToStringUni(item.TargetName);
                     if (!string.IsNullOrWhiteSpace(target))
                         Delete(target);

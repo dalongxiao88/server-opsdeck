@@ -40,7 +40,7 @@ namespace ServerForge
 
         public async Task<WinRmRemoteSystemInfo> GetSystemInfoAsync(CancellationToken cancellationToken)
         {
-const string script = @"
+string script = @"
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 $OutputEncoding = [Text.Encoding]::UTF8
@@ -67,7 +67,8 @@ $result | ConvertTo-Json -Compress
             EnsureSuccess(result, "WinRM 权限验证");
 
             string json = result.Output == null ? "" : result.Output.Trim();
-            Dictionary<string, object> values = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, object>>(json);
+            Dictionary<string, object> values = System.Text.Json.JsonSerializer.Deserialize(
+                json, ServerForgeJsonContext.Default.DictionaryStringObject);
             DateTime bootTime;
             if (values == null || !DateTime.TryParse(GetValue(values, "LastBootUpTime"), out bootTime))
                 throw new InvalidOperationException("WinRM 返回的系统信息格式无法识别");
@@ -82,7 +83,7 @@ $result | ConvertTo-Json -Compress
 
         public async Task SendRestartAsync(CancellationToken cancellationToken)
         {
-const string script = @"
+            string script = @"
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 $OutputEncoding = [Text.Encoding]::UTF8
@@ -99,12 +100,13 @@ Invoke-Command -ComputerName $env:XIAOBAI_WINRM_HOST -Port $env:XIAOBAI_WINRM_PO
     $output = (& shutdown.exe /r /t 5 /f 2>&1 | Out-String).Trim()
     $code = $LASTEXITCODE
     if ($code -ne 0) { throw ('shutdown.exe 返回错误代码 ' + $code + $(if ($output) { ': ' + $output } else { '' })) }
-    'RESTART_COMMAND_ACCEPTED'
+    '" + ProtectedText.RestartMarker + @"'
 }
 ";
             WinRmCommandResult result = await RunPowerShellAsync(script, TimeSpan.FromSeconds(90), cancellationToken);
             EnsureSuccess(result, "发送重启命令");
-            if (string.IsNullOrEmpty(result.Output) || result.Output.IndexOf("RESTART_COMMAND_ACCEPTED", StringComparison.OrdinalIgnoreCase) < 0)
+            if (string.IsNullOrEmpty(result.Output) ||
+                result.Output.IndexOf(ProtectedText.RestartMarker, StringComparison.OrdinalIgnoreCase) < 0)
                 throw new InvalidOperationException("WinRM 未返回重启命令确认");
         }
 
